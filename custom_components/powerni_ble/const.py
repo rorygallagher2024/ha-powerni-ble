@@ -31,6 +31,27 @@ CMD_PREV_USAGE = bytes([0xC2, 0x32])
 CMD_TOTAL_CONSUMPTION = bytes([0xC2, 0x36])
 CMD_TOTAL_UNITS = bytes([0xC2, 0x39])
 
+# 14-day half-hourly energy survey commands & markers
+CMD_READ_SURVEY = bytes([0xA0])
+CMD_SURVEY_NEXT = bytes([0xF1])
+RSP_SURVEY_ACK = 0xFC
+RSP_SURVEY_BLOCK_HEADER = 0x8A
+RSP_SURVEY_END = 0xFF
+SURVEY_BLOCK_SIZE = 10
+SURVEY_BLOCKS_PER_DAY = 13
+SURVEY_MAX_DAYS = 14
+SURVEY_INCREMENTAL_DAYS = 2
+SURVEY_KEEPALIVE_EVERY_BLOCKS = 10
+SURVEY_SYNC_INTERVAL = timedelta(hours=6)
+
+# Defer scheduled polls when no connectable advertisement has been heard for
+# this long (e.g. while the phone app holds the meter's single BLE link),
+# then catch up as soon as advertisements resume.
+ADVERTISEMENT_SILENT_SECONDS = 90.0
+FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS = 15.0
+RSSI_MIN_PUBLISH_INTERVAL_SECONDS = 60.0
+RSSI_MEDIAN_WINDOW = 15
+
 # Options
 CONF_PROXY_SOURCE = "proxy_source"
 CONF_SCAN_INTERVAL = "scan_interval"
@@ -45,6 +66,7 @@ RETRY_BACKOFF_MINUTES = (1, 2, 5)
 # Upper bound for one complete connect + read cycle, so a hung BLE operation
 # can never hold the connection lock and block later polls.
 POLL_TIMEOUT_SECONDS = 180
+SURVEY_TIMEOUT_SECONDS = 300
 
 # Retry a transient mid-session BLE drop or protocol timeout once inside the
 # same poll after letting the Freedom Unit's BLE radio return to idle.
@@ -56,12 +78,14 @@ POLL_STATUS_IDLE = "idle"
 POLL_STATUS_CONNECTING = "connecting"
 POLL_STATUS_READING = "reading"
 POLL_STATUS_RETRYING = "retrying"
+POLL_STATUS_WAITING = "waiting"
 POLL_STATUS_ERROR = "error"
 POLL_STATUS_OPTIONS: tuple[str, ...] = (
     POLL_STATUS_IDLE,
     POLL_STATUS_CONNECTING,
     POLL_STATUS_READING,
     POLL_STATUS_RETRYING,
+    POLL_STATUS_WAITING,
     POLL_STATUS_ERROR,
 )
 

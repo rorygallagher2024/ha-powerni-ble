@@ -27,6 +27,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> b
 
     coordinator = PowerNIDataUpdateCoordinator(hass, entry, address, name)
     await coordinator.async_load_stored_state()
+    entry.async_on_unload(coordinator.async_start_advertisement_listener())
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
@@ -43,6 +44,9 @@ async def _async_update_listener(hass: HomeAssistant, entry: PowerNIConfigEntry)
 
 async def async_unload_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> bool:
     """Unload a config entry."""
+    coordinator = entry.runtime_data
+    if coordinator._survey_task is not None and not coordinator._survey_task.done():
+        coordinator._survey_task.cancel()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

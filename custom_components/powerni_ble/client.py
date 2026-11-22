@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Callable
 import dataclasses
 from dataclasses import dataclass
@@ -14,21 +15,30 @@ _T = TypeVar("_T")
 
 from .const import (
     ALL_SECTIONS,
-    SECTION_LIVE,
-    SECTION_SPEND,
-    SECTION_UNITS,
     CMD_DISPLAY_RESET,
     CMD_ENTER_TRANSPARENT,
     CMD_GET_BALANCE,
     CMD_KEEPALIVE,
     CMD_LEAVE_TRANSPARENT,
     CMD_PREV_USAGE,
+    CMD_READ_SURVEY,
+    CMD_SURVEY_NEXT,
     CMD_TOTAL_CONSUMPTION,
     CMD_TOTAL_UNITS,
     NOTIFY_UUID,
     RSP_DISCONNECT_ACK,
     RSP_KEEPALIVE_ACK,
+    RSP_SURVEY_ACK,
+    RSP_SURVEY_BLOCK_HEADER,
+    RSP_SURVEY_END,
     RSP_TRANSPARENT_ACK,
+    SECTION_LIVE,
+    SECTION_SPEND,
+    SECTION_UNITS,
+    SURVEY_BLOCK_SIZE,
+    SURVEY_BLOCKS_PER_DAY,
+    SURVEY_KEEPALIVE_EVERY_BLOCKS,
+    SURVEY_MAX_DAYS,
     WRITE_UUID,
 )
 
@@ -60,6 +70,8 @@ RE_MONTH_USAGE = re.compile(
 RE_USAGE_AMOUNT = re.compile(r"\s*(-)?#(\d+\.\d+)")
 
 COMMAND_PACING_DELAY = 0.25
+SURVEY_PACING_DELAY = 0.05
+SURVEY_ACK_TIMEOUT = 5.0
 LINE_TIMEOUT = 4.0
 TRANSPARENT_ACK_TIMEOUT = 5.0
 KEEPALIVE_ACK_TIMEOUT = 2.0
@@ -203,6 +215,69 @@ class FrameAssembler:
             break
 
         return controls, lines
+
+
+class SurveyFrameAssembler:
+    """Reassembles binary 10-byte 0x8A survey blocks and single-byte markers."""
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+
+    @property
+    def pending_bytes(self) -> int:
+        """Return the number of incomplete trailing bytes buffered."""
+        return len(self._buf)
+
+    @property
+    def pending_hex(self) -> str:
+        """Return buffered trailing bytes formatted as space-separated hex."""
+        return self._buf.hex(" ")
+
+    def feed(
+        self, chunk: bytes
+    ) -> tuple[list[bytes], list[bytes], bool, bool]:
+        """Feed raw BLE notification bytes and return parsed survey events."""
+        self._buf.extend(chunk)
+        controls: list[bytes] = []
+        blocks: list[bytes] = []
+        got_ack = False
+        got_end = False
+
+        while self._buf:
+            matched_ctrl = False
+            for ctrl in CONTROL_FRAMES:
+                if self._buf.startswith(ctrl):
+                    controls.append(bytes(ctrl))
+                    del self._buf[: len(ctrl)]
+                    matched_ctrl = True
+                    break
+            if matched_ctrl:
+                continue
+
+            if len(self._buf) < 4 and any(
+                ctrl.startswith(bytes(self._buf)) for ctrl in CONTROL_FRAMES
+            ):
+                break
+
+            head = self._buf[0]
+            if head == RSP_SURVEY_ACK:
+                got_ack = True
+                del self._buf[0]
+                continue
+            if head == RSP_SURVEY_END:
+                got_end = True
+                del self._buf[0]
+                continue
+            if head == RSP_SURVEY_BLOCK_HEADER:
+                if len(self._buf) < SURVEY_BLOCK_SIZE:
+                    break
+                blocks.append(bytes(self._buf[:SURVEY_BLOCK_SIZE]))
+                del self._buf[:SURVEY_BLOCK_SIZE]
+                continue
+
+            del self._buf[0]
+
+        return controls, blocks, got_ack, got_end
 
 
 def _is_disconnected(
@@ -384,6 +459,95 @@ def _log_gatt_services(client: BleakClient, logger: logging.Logger) -> None:
             )
 
 
+async def _enter_transparent_mode(
+    client: BleakClient,
+    ctrl_queue: asyncio.Queue[bytes],
+    raw_notifies: list[str],
+    logger: logging.Logger,
+    disconnected: asyncio.Event | None,
+) -> bool:
+    """Enter transparent mode and return whether writes require response=True."""
+    logger.debug("Sending ENTER_TRANSPARENT_MODE")
+    _check_connected(client, disconnected)
+    await client.write_gatt_char(WRITE_UUID, CMD_ENTER_TRANSPARENT, response=False)
+    got_ack = await _wait_control_frame(
+        ctrl_queue, RSP_TRANSPARENT_ACK, TRANSPARENT_ACK_TIMEOUT, disconnected
+    )
+    if got_ack:
+        logger.info("Entered transparent mode on Power NI meter")
+        return False
+
+    summary, write_char, notify_char = _summarize_services(client)
+    logger.warning(
+        "Transparent ACK (response=False) timed out; raw_notifies(%d)=%s; notify_char=%s; gatt=[%s]",
+        len(raw_notifies),
+        raw_notifies,
+        _format_char(notify_char),
+        summary,
+    )
+    if write_char is not None and "write" in getattr(
+        write_char, "properties", ()
+    ):
+        try:
+            _check_connected(client, disconnected)
+            await client.write_gatt_char(
+                WRITE_UUID, CMD_ENTER_TRANSPARENT, response=True
+            )
+            logger.warning(
+                "Write-with-response succeeded for ENTER_TRANSPARENT_MODE; waiting 2.5s for 55 cc 01 33"
+            )
+            got_ack = await _wait_control_frame(
+                ctrl_queue, RSP_TRANSPARENT_ACK, 2.5, disconnected
+            )
+            if got_ack:
+                logger.info("Entered transparent mode on Power NI meter")
+                return True
+            logger.warning(
+                "Write-with-response ACK still timed out; raw_notifies(%d)=%s",
+                len(raw_notifies),
+                raw_notifies,
+            )
+        except PowerNIDisconnectedError:
+            raise
+        except Exception as err:
+            logger.warning(
+                "Write-with-response error: %s: %s", type(err).__name__, err
+            )
+    else:
+        logger.warning(
+            "Skipping write-with-response fallback; write_char=%s",
+            _format_char(write_char),
+        )
+
+    raise PowerNIProtocolError(
+        "Timed out waiting for transparent mode acknowledgement (55 cc 01 33)"
+    )
+
+
+async def _leave_transparent_mode(
+    client: BleakClient,
+    ctrl_queue: asyncio.Queue[bytes],
+    notify_started: bool,
+    logger: logging.Logger,
+    disconnected: asyncio.Event | None,
+) -> None:
+    """Exit transparent mode and stop GATT notifications if still connected."""
+    if _is_disconnected(client, disconnected):
+        return
+    try:
+        await client.write_gatt_char(WRITE_UUID, CMD_LEAVE_TRANSPARENT, response=False)
+        await _wait_control_frame(
+            ctrl_queue, RSP_DISCONNECT_ACK, DISCONNECT_ACK_TIMEOUT
+        )
+    except Exception as err:
+        logger.debug("Ignoring error leaving transparent mode: %s", err)
+    if notify_started:
+        try:
+            await client.stop_notify(NOTIFY_UUID)
+        except Exception as err:
+            logger.debug("Ignoring error stopping notifications: %s", err)
+
+
 async def async_read_meter(
     client: BleakClient,
     logger: logging.Logger = _LOGGER,
@@ -395,7 +559,7 @@ async def async_read_meter(
 
     `sections` selects which groups of readings to fetch (balance is always
     read). Fields for skipped sections are left as None. When `on_progress` is
-    provided, intermediate snapshots are emitted as each section completes.
+    provided, intermediate section deltas are emitted as each section finishes.
     """
     _log_gatt_services(client, logger)
 
@@ -445,65 +609,14 @@ async def async_read_meter(
 
     data = PowerNIMeterData()
 
-    def _emit_progress() -> None:
-        if on_progress is not None and data.has_any_value():
-            on_progress(dataclasses.replace(data))
+    def _emit_progress(delta: PowerNIMeterData) -> None:
+        if on_progress is not None and delta.has_any_value():
+            on_progress(delta)
 
     try:
-        logger.debug("Sending ENTER_TRANSPARENT_MODE")
-        _check_connected(client, disconnected)
-        await client.write_gatt_char(WRITE_UUID, CMD_ENTER_TRANSPARENT, response=False)
-        got_ack = await _wait_control_frame(
-            ctrl_queue, RSP_TRANSPARENT_ACK, TRANSPARENT_ACK_TIMEOUT, disconnected
+        write_with_response = await _enter_transparent_mode(
+            client, ctrl_queue, raw_notifies, logger, disconnected
         )
-        if not got_ack:
-            summary, write_char, notify_char = _summarize_services(client)
-            logger.warning(
-                "Transparent ACK (response=False) timed out; raw_notifies(%d)=%s; notify_char=%s; gatt=[%s]",
-                len(raw_notifies),
-                raw_notifies,
-                _format_char(notify_char),
-                summary,
-            )
-            if write_char is not None and "write" in getattr(
-                write_char, "properties", ()
-            ):
-                try:
-                    _check_connected(client, disconnected)
-                    await client.write_gatt_char(
-                        WRITE_UUID, CMD_ENTER_TRANSPARENT, response=True
-                    )
-                    logger.warning(
-                        "Write-with-response succeeded for ENTER_TRANSPARENT_MODE; waiting 2.5s for 55 cc 01 33"
-                    )
-                    got_ack = await _wait_control_frame(
-                        ctrl_queue, RSP_TRANSPARENT_ACK, 2.5, disconnected
-                    )
-                    if got_ack:
-                        write_with_response = True
-                    else:
-                        logger.warning(
-                            "Write-with-response ACK still timed out; raw_notifies(%d)=%s",
-                            len(raw_notifies),
-                            raw_notifies,
-                        )
-                except PowerNIDisconnectedError:
-                    raise
-                except Exception as err:
-                    logger.warning(
-                        "Write-with-response error: %s: %s", type(err).__name__, err
-                    )
-            else:
-                logger.warning(
-                    "Skipping write-with-response fallback; write_char=%s",
-                    _format_char(write_char),
-                )
-
-        if not got_ack:
-            raise PowerNIProtocolError(
-                "Timed out waiting for transparent mode acknowledgement (55 cc 01 33)"
-            )
-        logger.info("Entered transparent mode on Power NI meter")
 
         # 1. Balance and days remaining (meter may alternate in either order)
         await _display_reset()
@@ -534,8 +647,13 @@ async def async_read_meter(
                 data.days_left = (
                     int(dl_match.group(2)) if dl_match.group(2) is not None else None
                 )
-        if data.balance is not None or data.days_left_status is not None:
-            _emit_progress()
+        _emit_progress(
+            PowerNIMeterData(
+                balance=data.balance,
+                days_left=data.days_left,
+                days_left_status=data.days_left_status,
+            )
+        )
 
         # 2. Live kW load and current £/hr rate
         if SECTION_LIVE in sections:
@@ -565,11 +683,12 @@ async def async_read_meter(
                     "Timed out reading current hourly cost (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
                 )
-            if (
-                data.current_load_kw is not None
-                or data.current_cost_per_hour is not None
-            ):
-                _emit_progress()
+            _emit_progress(
+                PowerNIMeterData(
+                    current_load_kw=data.current_load_kw,
+                    current_cost_per_hour=data.current_cost_per_hour,
+                )
+            )
 
         # 3. Keepalive, then cumulative import units (kWh)
         if SECTION_UNITS in sections or SECTION_SPEND in sections:
@@ -593,8 +712,7 @@ async def async_read_meter(
                     "Timed out reading total import kWh units (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
                 )
-            if data.total_import_kwh is not None:
-                _emit_progress()
+            _emit_progress(PowerNIMeterData(total_import_kwh=data.total_import_kwh))
 
         # 4. Recent spend (yesterday / last 7 days / last month)
         if SECTION_SPEND in sections:
@@ -657,18 +775,159 @@ async def async_read_meter(
         )
         return data
     finally:
-        if not _is_disconnected(client, disconnected):
+        await _leave_transparent_mode(
+            client, ctrl_queue, notify_started, logger, disconnected
+        )
+
+
+async def async_read_survey(
+    client: BleakClient,
+    days: int = SURVEY_MAX_DAYS,
+    logger: logging.Logger = _LOGGER,
+    disconnected: asyncio.Event | None = None,
+) -> list[bytes]:
+    """Read up to `days` of 13-block 30-minute energy survey history (0xA0)."""
+    _log_gatt_services(client, logger)
+
+    assembler = SurveyFrameAssembler()
+    ctrl_queue: asyncio.Queue[bytes] = asyncio.Queue()
+    event_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    ack_event = asyncio.Event()
+    raw_notifies: list[str] = []
+    recent_notifies: deque[str] = deque(maxlen=12)
+    notify_started = False
+
+    def _on_notify(_sender: Any, payload: bytearray) -> None:
+        raw = bytes(payload)
+        raw_hex = raw.hex(" ")
+        if len(raw_notifies) < 20:
+            raw_notifies.append(raw_hex)
+        recent_notifies.append(raw_hex)
+        logger.debug("Survey BLE notify %dB: %s", len(raw), raw_hex)
+        controls, blocks, got_ack, got_end = assembler.feed(raw)
+        for ctrl in controls:
+            ctrl_queue.put_nowait(ctrl)
+        if got_ack:
+            ack_event.set()
+        for block in blocks:
+            event_queue.put_nowait(block)
+        if got_end:
+            event_queue.put_nowait(None)
+
+    logger.info("Starting Power NI BLE survey read (up to %d days)", days)
+    _check_connected(client, disconnected)
+    await client.start_notify(NOTIFY_UUID, _on_notify)
+    notify_started = True
+
+    try:
+        write_with_response = await _enter_transparent_mode(
+            client, ctrl_queue, raw_notifies, logger, disconnected
+        )
+
+        async def _write(cmd: bytes, delay: float) -> None:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            _check_connected(client, disconnected)
+            await client.write_gatt_char(WRITE_UUID, cmd, response=write_with_response)
+
+        await _write(CMD_READ_SURVEY, COMMAND_PACING_DELAY)
+
+        # Wait for 0xFC start acknowledgement or abort on disconnect
+        if disconnected is None:
             try:
-                await client.write_gatt_char(
-                    WRITE_UUID, CMD_LEAVE_TRANSPARENT, response=False
+                await asyncio.wait_for(ack_event.wait(), timeout=SURVEY_ACK_TIMEOUT)
+            except asyncio.TimeoutError as err:
+                raise PowerNIProtocolError(
+                    f"Timed out waiting for survey acknowledgement (0xFC); raw_notifies={raw_notifies}"
+                ) from err
+        else:
+            ack_task = asyncio.create_task(ack_event.wait())
+            disc_task = asyncio.create_task(disconnected.wait())
+            try:
+                done, pending = await asyncio.wait(
+                    (ack_task, disc_task),
+                    timeout=SURVEY_ACK_TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-                await _wait_control_frame(
-                    ctrl_queue, RSP_DISCONNECT_ACK, DISCONNECT_ACK_TIMEOUT
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if disc_task in done:
+                    raise PowerNIDisconnectedError(
+                        "BLE connection dropped waiting for survey ACK"
+                    )
+                if ack_task not in done:
+                    raise PowerNIProtocolError(
+                        f"Timed out waiting for survey acknowledgement (0xFC); raw_notifies={raw_notifies}"
+                    )
+            except BaseException:
+                for task in (ack_task, disc_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(ack_task, disc_task, return_exceptions=True)
+                raise
+
+        target_blocks = max(1, min(days, SURVEY_MAX_DAYS)) * SURVEY_BLOCKS_PER_DAY
+        blocks: list[bytes] = []
+        keepalive_timeouts = 0
+        just_kept_alive = False
+
+        def _survey_timeout_error() -> PowerNIProtocolError:
+            return PowerNIProtocolError(
+                f"Timed out reading survey block #{len(blocks) + 1} "
+                f"(keepalive_timeouts={keepalive_timeouts}, "
+                f"pending={assembler.pending_hex!r}, "
+                f"recent_notifies={list(recent_notifies)})"
+            )
+
+        while len(blocks) < target_blocks:
+            if blocks and len(blocks) % SURVEY_KEEPALIVE_EVERY_BLOCKS == 0:
+                await _write(CMD_KEEPALIVE, COMMAND_PACING_DELAY)
+                if not await _wait_control_frame(
+                    ctrl_queue, RSP_KEEPALIVE_ACK, KEEPALIVE_ACK_TIMEOUT, disconnected
+                ):
+                    keepalive_timeouts += 1
+                    logger.warning(
+                        "Survey keepalive ACK timed out after %d blocks; continuing",
+                        len(blocks),
+                    )
+                just_kept_alive = True
+
+            delay = COMMAND_PACING_DELAY if just_kept_alive else SURVEY_PACING_DELAY
+            just_kept_alive = False
+            await _write(CMD_SURVEY_NEXT, delay)
+            try:
+                item = await _wait_queue_or_disconnect(
+                    event_queue, LINE_TIMEOUT, disconnected
                 )
-            except Exception as err:
-                logger.debug("Ignoring error leaving transparent mode: %s", err)
-            if notify_started:
+            except asyncio.TimeoutError as err:
+                if assembler.pending_bytes != 0:
+                    raise _survey_timeout_error() from err
+                logger.info(
+                    "Survey block #%d timed out with empty buffer; retrying 0xF1",
+                    len(blocks) + 1,
+                )
+                await _write(CMD_SURVEY_NEXT, COMMAND_PACING_DELAY)
                 try:
-                    await client.stop_notify(NOTIFY_UUID)
-                except Exception as err:
-                    logger.debug("Ignoring error stopping notifications: %s", err)
+                    item = await _wait_queue_or_disconnect(
+                        event_queue, LINE_TIMEOUT, disconnected
+                    )
+                except asyncio.TimeoutError as retry_err:
+                    raise _survey_timeout_error() from retry_err
+
+            if item is None:
+                logger.debug("Survey end marker (0xFF) after %d blocks", len(blocks))
+                break
+            blocks.append(item)
+
+        logger.info(
+            "Power NI survey read %d block(s) (%d complete day(s))",
+            len(blocks),
+            len(blocks) // SURVEY_BLOCKS_PER_DAY,
+        )
+        return blocks
+    finally:
+        await _leave_transparent_mode(
+            client, ctrl_queue, notify_started, logger, disconnected
+        )

@@ -13,7 +13,13 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower, UnitOfTime
+from homeassistant.const import (
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfEnergy,
+    UnitOfPower,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -30,6 +36,7 @@ from .const import (
     POLL_STATUS_OPTIONS,
     POLL_STATUS_READING,
     POLL_STATUS_RETRYING,
+    POLL_STATUS_WAITING,
 )
 from .coordinator import PowerNIDataUpdateCoordinator
 
@@ -38,6 +45,7 @@ POLL_STATUS_ICONS: dict[str, str] = {
     POLL_STATUS_CONNECTING: "mdi:bluetooth-connect",
     POLL_STATUS_READING: "mdi:sync",
     POLL_STATUS_RETRYING: "mdi:refresh-auto",
+    POLL_STATUS_WAITING: "mdi:bluetooth-off",
     POLL_STATUS_ERROR: "mdi:alert-circle-outline",
 }
 
@@ -263,6 +271,15 @@ STATUS_SENSORS: tuple[PowerNIStatusSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:cash-clock",
         value_fn=lambda c: c.last_top_up.at if c.last_top_up else None,
+    ),
+    PowerNIStatusSensorEntityDescription(
+        key="signal_strength",
+        name="Signal strength",
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.rssi,
     ),
 )
 
