@@ -5,6 +5,7 @@
 
   <p>
     <a href="https://github.com/rorygallagher2024/ha-powerni-ble/releases"><img src="https://img.shields.io/github/v/release/rorygallagher2024/ha-powerni-ble?style=flat-square" alt="GitHub Release" /></a>
+    <a href="https://www.home-assistant.io/"><img src="https://img.shields.io/badge/Home%20Assistant-2026.10%2B-18BCF2?style=flat-square&logo=homeassistant&logoColor=white" alt="Home Assistant 2026.10+" /></a>
     <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5?style=flat-square" alt="HACS Custom" /></a>
     <a href="https://github.com/rorygallagher2024/ha-powerni-ble/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/rorygallagher2024/ha-powerni-ble/ci.yml?branch=main&label=CI&style=flat-square" alt="CI status" /></a>
     <a href="https://github.com/rorygallagher2024/ha-powerni-ble/actions/workflows/validate.yml"><img src="https://img.shields.io/github/actions/workflow/status/rorygallagher2024/ha-powerni-ble/validate.yml?branch=main&label=HACS%20%26%20Hassfest&style=flat-square" alt="Validate status" /></a>
@@ -25,6 +26,13 @@
 
 > [!NOTE]
 > **Unofficial / Independent Project:** This integration is not affiliated with, endorsed by, or supported by Power NI, Energia Group, or Eckoh. It communicates **locally and read-only** over Bluetooth Low Energy (BLE) with your own Freedom Unit via a local Linux Bluetooth adapter or an ESPHome Bluetooth Proxy. It never contacts Power NI cloud servers and does not support top-ups or keypad modifications.
+
+## Highlights
+
+- **100% local & read-only BLE:** Polls your Freedom Unit directly over Bluetooth with zero cloud accounts or scraping.
+- **Live credit, load, spend & top-up tracking:** Exposes remaining `GBP` balance, estimated days left, live `kW` load, hourly cost rate, recent spend, and `powerni_ble_top_up` events with permanent hourly Long-Term Statistics.
+- **Resilient multi-proxy & phone-app coexistence:** Remembers the working bonded proxy automatically, pauses in **`Waiting for meter`** when the mobile app holds the single BLE slot, and raises a Home Assistant **Repair** issue if an unbonded proxy fails authentication.
+- **Optional 14-day energy survey backfill (`0.00625 kWh`):** Imports completed hourly `kWh` buckets into an isolated external statistic (`powerni_ble:<mac>_energy_history`) without altering existing Energy Dashboard sources (with a Configure toggle to run manual-only if you already use CT clamps).
 
 <p align="center">
   <img src="docs/images/device-page.png" alt="Power NI Keypad+ BLE device page in Home Assistant" width="520" />
@@ -95,7 +103,7 @@ The Freedom Unit only allows one Bluetooth connection at a time. To keep BLE ses
 | Transport | Status | One-Time Bonding Method | Notes |
 | --- | --- | --- | --- |
 | Local Linux Bluetooth (`bluetoothctl` / BlueZ) | Supported | Pair directly on HA host with `DisplayOnly` agent | Bond persists in host BlueZ storage |
-| ESPHome Bluetooth Proxy (`esp-idf`) | Verified working | Temporary OTA flash with [examples/esphome-pair-helper.yaml](examples/esphome-pair-helper.yaml), then restore stock firmware | Bond persists in ESP32 NVS flash across OTA updates; pin the bonded proxy in **Configure** |
+| ESPHome Bluetooth Proxy (`esp-idf`) | Verified working | Temporary OTA flash with [examples/esphome-pair-helper.yaml](examples/esphome-pair-helper.yaml), then restore stock firmware | Bond persists in ESP32 NVS flash across OTA updates; **Automatic** remembers the bonded proxy (or pin manually in **Configure**) |
 
 ## Prerequisites: One-Time 6-Digit PIN Pairing
 
@@ -129,7 +137,7 @@ Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 
 2. Temporarily OTA-flash the target ESP32 using [examples/esphome-pair-helper.yaml](examples/esphome-pair-helper.yaml) (updated with your Freedom Unit's MAC address, API key, and your chosen 6-digit PIN).
 3. Watch the ESPHome logs until `=== ENTER PASSKEY ON FREEDOM UNIT: 123456# ===` appears, then type that 6-digit PIN followed by `#` on your Freedom Unit keypad.
 4. Flash your normal ESPHome Bluetooth Proxy firmware back onto the ESP32 — the BLE bond remains saved in NVS flash.
-5. In Home Assistant, open **Configure** on **Power NI Keypad+ BLE** and pin **Bluetooth proxy / adapter** to that bonded proxy.
+5. **Automatic** proxy selection remembers and reuses that bonded proxy after the first successful poll, or you can open **Configure** on **Power NI Keypad+ BLE** and pin **Bluetooth proxy / adapter** explicitly.
 
 > [!TIP]
 > If your Freedom Unit ignores pairing or stops advertising, reset its internal Bluetooth radio from the keypad by entering **`*159268#`** (`B#######` units) or **`*0#`** (`PNI#####` units).
@@ -229,6 +237,30 @@ actions:
 
 </details>
 
+<details>
+<summary>Example automation: alert when balance or days remaining drops low</summary>
+
+```yaml
+alias: Power NI low credit alert
+mode: single
+triggers:
+  - trigger: numeric_state
+    entity_id: sensor.b1234567_balance
+    below: 10
+  - trigger: numeric_state
+    entity_id: sensor.b1234567_days_left
+    below: 4
+actions:
+  - action: notify.notify
+    data:
+      title: Power NI credit running low
+      message: >
+        Remaining balance: £{{ '%.2f' | format(states('sensor.b1234567_balance') | float(0)) }}
+        (~{{ states('sensor.b1234567_days_left') }} days left).
+```
+
+</details>
+
 ## Energy Dashboard
 
 The integration provides two ways to feed Home Assistant's **Energy** dashboard:
@@ -249,13 +281,13 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 </p>
 
 > [!NOTE]
-> The Freedom Unit reports `Total import energy` in whole `kWh` integers (`0` decimal precision on the meter itself). Hourly Energy Dashboard bars therefore increment in `1 kWh` steps.
+> The **Total import energy** sensor reports the cumulative register in whole `kWh` integers (`0` decimal precision on the meter's LCD), so its hourly Energy Dashboard bars increment in `1 kWh` steps. For finer `0.00625 kWh` hourly resolution, add **`<meter> Energy history`** instead.
 
 ## Troubleshooting
 
 ### Weak BLE signal (`RSSI`) or intermittent timeouts
 
-- Check the RSSI shown next to your adapter or proxy in **Configure**. Signal stronger than **`-80 dBm`** is recommended; weaker than `-88 dBm` can drop while negotiating GATT encryption.
+- Check the diagnostic **Signal strength** (`dBm`) sensor on the device page or the RSSI shown next to your adapter/proxy in **Configure**. Signal stronger than **`-80 dBm`** is recommended; weaker than `-88 dBm` can drop while negotiating GATT encryption.
 - Move an ESPHome Bluetooth Proxy closer to the Freedom Unit (same room or hallway) and use the `esp-idf` framework.
 
 ### Freedom Unit stops responding to pairing or scans
@@ -268,7 +300,7 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 ### Phone app contention
 
 - The Microchip/ISSC BLE module supports only **one active BLE connection at a time**.
-- While the official Power NI Keypad+ phone app is open and connected, Home Assistant polls cannot connect until the app is closed.
+- While the official Power NI Keypad+ phone app is open and connected, the meter stops advertising and Home Assistant automatically pauses scheduled polls in **`Waiting for meter`** status without logging errors, then triggers an immediate catch-up poll once the phone app is closed.
 - Always close the phone app before running the one-time PIN pairing. During normal polling, Home Assistant connects briefly and disconnects cleanly afterward.
 
 ### `Insufficient authorization (8)` or `Pairing failed due to error: 102`
@@ -288,3 +320,14 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 - **Zero-CLI ESPHome pairing helper:** Expose the passkey and pairing status via ESPHome `text_sensor` / `button` entities directly in Home Assistant.
 - **12-month historical spend (`JAN`–`DEC`) & meter serial (`0x80`):** Parse the remaining monthly spend frames from `0xC2 0x32` and binary serial/diagnostics frames from `0x80`.
 - **Notification Blueprint:** Pre-built Blueprint for low-credit, low-days-remaining, and top-up notifications.
+
+## Support & Development
+
+- **Reporting issues:** Download a redacted diagnostics bundle via **Settings → Devices & services → Power NI Keypad+ BLE → `⋮` → Download diagnostics** (Bluetooth MAC addresses, unique IDs, and proxy sources are automatically redacted) and attach it to a [GitHub Issue](https://github.com/rorygallagher2024/ha-powerni-ble/issues).
+- **Local checks & tests (Python 3.14+):**
+  ```bash
+  pip install -r requirements-dev.txt
+  ruff check custom_components tests
+  mypy custom_components/powerni_ble
+  pytest -v
+  ```
