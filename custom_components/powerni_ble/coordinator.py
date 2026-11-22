@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
+from typing import Any
 
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakCharacteristicNotFoundError, BleakError
@@ -13,6 +15,8 @@ from bleak_retry_connector import BleakClientWithServiceCache, establish_connect
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -30,12 +34,35 @@ from .const import (
     POLL_TIMEOUT_SECONDS,
     SECTION_SPEND,
     SECTION_UNITS,
+    SESSION_RETRY_ATTEMPTS,
+    SESSION_RETRY_DELAY_SECONDS,
     clamp_scan_interval,
     retry_interval_minutes,
     sections_due,
 )
+from .tracking import (
+    detect_top_up,
+    fresh_fields,
+    is_stale,
+    record_read_times,
+    stale_after,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+EVENT_TOP_UP = f"{DOMAIN}_top_up"
+STORE_VERSION = 1
+STORE_SAVE_DELAY_SECONDS = 10
+
+
+@dataclass(frozen=True)
+class TopUp:
+    """A detected top-up (amount is the balance rise between two reads)."""
+
+    amount: float
+    at: datetime
+    balance_before: float
+    balance_after: float
 
 
 class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
@@ -63,6 +90,16 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         # When each slow reading group was last read successfully.
         self._section_last_read: dict[str, datetime] = {}
         self._force_full_read = False
+        # When each field was last returned by the meter (not carried over).
+        self.field_read_at: dict[str, datetime] = {}
+        self._stale_notified: set[str] = set()
+        self.last_successful_read: datetime | None = None
+        self.last_top_up: TopUp | None = None
+        # Last freshly read balance, compared with the next to detect top-ups.
+        self._top_up_baseline: float | None = None
+        self._store: Store[dict[str, Any]] = Store(
+            hass, STORE_VERSION, f"{DOMAIN}.{config_entry.entry_id}"
+        )
 
         super().__init__(
             hass,
@@ -81,6 +118,13 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
 
         self.scan_interval_minutes = clamped
         self.update_interval = interval
+        now = dt_util.now()
+        max_age = stale_after(clamped)
+        self._stale_notified = {
+            field
+            for field, ts in self.field_read_at.items()
+            if is_stale(ts, now, max_age)
+        }
         if self._listeners:
             self._schedule_refresh()
         self.async_update_listeners()
@@ -143,6 +187,16 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 self.update_interval,
                 self._consecutive_failures,
             )
+            now = dt_util.now()
+            max_age = stale_after(self.scan_interval_minutes)
+            newly_stale = {
+                field
+                for field, ts in self.field_read_at.items()
+                if is_stale(ts, now, max_age)
+            } - self._stale_notified
+            if newly_stale:
+                self._stale_notified.update(newly_stale)
+                self.async_update_listeners()
 
     async def async_request_full_refresh(self) -> None:
         """Refresh now, reading every value regardless of schedule."""
@@ -162,6 +216,86 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             )
         ):
             self._section_last_read[SECTION_SPEND] = now
+
+    async def async_load_stored_state(self) -> None:
+        """Restore the top-up baseline and last top-up from storage."""
+        stored = await self._store.async_load() or {}
+        balance = stored.get("last_balance")
+        self._top_up_baseline = float(balance) if balance is not None else None
+        last_top_up = stored.get("last_top_up")
+        if last_top_up:
+            at = dt_util.parse_datetime(last_top_up.get("at") or "")
+            if at is not None:
+                self.last_top_up = TopUp(
+                    amount=float(last_top_up["amount"]),
+                    at=at,
+                    balance_before=float(last_top_up["balance_before"]),
+                    balance_after=float(last_top_up["balance_after"]),
+                )
+
+    def _stored_state(self) -> dict[str, Any]:
+        """Return the state persisted across restarts."""
+        last_top_up = None
+        if self.last_top_up is not None:
+            last_top_up = {
+                "amount": self.last_top_up.amount,
+                "at": self.last_top_up.at.isoformat(),
+                "balance_before": self.last_top_up.balance_before,
+                "balance_after": self.last_top_up.balance_after,
+            }
+        return {"last_balance": self._top_up_baseline, "last_top_up": last_top_up}
+
+    def _check_top_up(self, balance: float | None, now: datetime) -> None:
+        """Fire a top-up event when a freshly read balance rose since the last one.
+
+        Only freshly read balances are compared (never carried-over values), and
+        the baseline survives restarts so a top-up made while Home Assistant was
+        down is still detected.
+        """
+        if balance is None:
+            return
+        previous = self._top_up_baseline
+        self._top_up_baseline = balance
+        amount = detect_top_up(previous, balance)
+        if amount is not None and previous is not None:
+            self.last_top_up = TopUp(
+                amount=amount, at=now, balance_before=previous, balance_after=balance
+            )
+            _LOGGER.info(
+                "Top-up of £%.2f detected on %s (%.2f -> %.2f)",
+                amount,
+                self.address,
+                previous,
+                balance,
+            )
+            self.hass.bus.async_fire(
+                EVENT_TOP_UP,
+                {
+                    "device_id": self._device_id(),
+                    "address": self.address,
+                    "name": self.device_name,
+                    "amount": amount,
+                    "balance_before": previous,
+                    "balance_after": balance,
+                },
+            )
+        if previous != balance:
+            self._store.async_delay_save(self._stored_state, STORE_SAVE_DELAY_SECONDS)
+
+    def _device_id(self) -> str | None:
+        """Return this meter's device registry id, if registered."""
+        device = dr.async_get(self.hass).async_get_device(
+            identifiers={(DOMAIN, self.address)}
+        )
+        return device.id if device else None
+
+    def is_field_stale(self, field: str) -> bool:
+        """Return True if a reading was never taken or is too old to trust."""
+        return is_stale(
+            self.field_read_at.get(field),
+            dt_util.now(),
+            stale_after(self.scan_interval_minutes),
+        )
 
     def _get_ble_device(self) -> BLEDevice | None:
         """Resolve the target BLEDevice (optionally pinned to a specific proxy)."""
@@ -201,6 +335,12 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         self._record_result(True)
         self._force_full_read = False
         self._mark_sections_read(new_data, now)
+        self.last_successful_read = now
+        record_read_times(self.field_read_at, new_data, now)
+        self._stale_notified.difference_update(fresh_fields(new_data))
+        if new_data.days_left_status is not None:
+            self._stale_notified.discard("days_left")
+        self._check_top_up(new_data.balance, now)
 
         merged, carried = merge_meter_data(new_data, self.data)
         if carried:
@@ -214,61 +354,98 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
     async def _async_poll(self, sections: frozenset[str]) -> PowerNIMeterData:
         """Connect over BLE, read telemetry, and disconnect."""
         async with self._connect_lock:
-            ble_device = self._get_ble_device()
-            if ble_device is None:
-                if self.proxy_source:
+            last_err: Exception | None = None
+            for attempt in range(1, SESSION_RETRY_ATTEMPTS + 1):
+                ble_device = self._get_ble_device()
+                if ble_device is None:
+                    if self.proxy_source:
+                        raise UpdateFailed(
+                            f"Configured Bluetooth proxy {self.proxy_source} cannot currently see {self.address}"
+                        )
                     raise UpdateFailed(
-                        f"Configured Bluetooth proxy {self.proxy_source} cannot currently see {self.address}"
+                        f"No connectable Bluetooth proxy or adapter can currently see {self.address}"
                     )
-                raise UpdateFailed(
-                    f"No connectable Bluetooth proxy or adapter can currently see {self.address}"
-                )
 
-            client: BleakClientWithServiceCache | None = None
-            details = getattr(ble_device, "details", None)
-            try:
-                _LOGGER.debug(
-                    "Connecting to Power NI meter %s (%s, details=%s)%s",
-                    self.device_name,
-                    self.address,
-                    details,
-                    f" via {self.proxy_source}" if self.proxy_source else "",
-                )
-                client = await establish_connection(
-                    BleakClientWithServiceCache,
-                    ble_device,
-                    self.device_name,
-                    ble_device_callback=self._get_ble_device,
-                    use_services_cache=True,
-                    pair=True,
-                    max_attempts=3,
-                )
-                return await async_read_meter(client, _LOGGER, sections)
-            except (BleakError, PowerNIProtocolError, TimeoutError) as err:
-                if isinstance(err, BleakCharacteristicNotFoundError) and client is not None:
-                    # The cached GATT table may be stale or incomplete; force
-                    # service discovery on the next connection.
-                    try:
-                        await client.clear_cache()
-                    except Exception as cache_err:  # noqa: BLE001
-                        _LOGGER.debug(
-                            "Ignoring error clearing service cache for %s: %s",
+                client: BleakClientWithServiceCache | None = None
+                details = getattr(ble_device, "details", None)
+                disconnected = asyncio.Event()
+                should_retry = False
+
+                def _on_disconnect(_client: Any) -> None:
+                    disconnected.set()
+
+                try:
+                    _LOGGER.debug(
+                        "Connecting to Power NI meter %s (%s, details=%s, attempt=%d/%d)%s",
+                        self.device_name,
+                        self.address,
+                        details,
+                        attempt,
+                        SESSION_RETRY_ATTEMPTS,
+                        f" via {self.proxy_source}" if self.proxy_source else "",
+                    )
+                    client = await establish_connection(
+                        BleakClientWithServiceCache,
+                        ble_device,
+                        self.device_name,
+                        disconnected_callback=_on_disconnect,
+                        ble_device_callback=self._get_ble_device,
+                        use_services_cache=True,
+                        pair=True,
+                        max_attempts=3,
+                    )
+                    return await async_read_meter(
+                        client, _LOGGER, sections, disconnected=disconnected
+                    )
+                except (BleakError, PowerNIProtocolError, TimeoutError) as err:
+                    last_err = err
+                    if (
+                        isinstance(err, BleakCharacteristicNotFoundError)
+                        and client is not None
+                        and client.is_connected
+                    ):
+                        # Only clear cached services while still connected; a
+                        # mid-read disconnect clears client.services on the backend.
+                        try:
+                            await client.clear_cache()
+                        except Exception as cache_err:  # noqa: BLE001
+                            _LOGGER.debug(
+                                "Ignoring error clearing service cache for %s: %s",
+                                self.address,
+                                cache_err,
+                            )
+                    if client is not None and attempt < SESSION_RETRY_ATTEMPTS:
+                        should_retry = True
+                    else:
+                        _LOGGER.warning(
+                            "Failed reading Power NI meter %s (%s, details=%s): %s",
+                            self.device_name,
                             self.address,
-                            cache_err,
+                            details,
+                            err,
                         )
-                _LOGGER.warning(
-                    "Failed reading Power NI meter %s (%s, details=%s): %s",
-                    self.device_name,
-                    self.address,
-                    details,
-                    err,
-                )
-                raise UpdateFailed(f"BLE read failed: {err}") from err
-            finally:
-                if client is not None and client.is_connected:
-                    try:
-                        await client.disconnect()
-                    except Exception as err:
-                        _LOGGER.debug(
-                            "Ignoring error disconnecting %s: %s", self.address, err
-                        )
+                        raise UpdateFailed(f"BLE read failed: {err}") from err
+                finally:
+                    if client is not None and client.is_connected:
+                        try:
+                            await client.disconnect()
+                        except Exception as err:
+                            _LOGGER.debug(
+                                "Ignoring error disconnecting %s: %s",
+                                self.address,
+                                err,
+                            )
+
+                if should_retry:
+                    _LOGGER.info(
+                        "Power NI meter %s (%s) read interrupted (%s); retrying in %.0fs (attempt %d/%d)",
+                        self.device_name,
+                        self.address,
+                        last_err,
+                        SESSION_RETRY_DELAY_SECONDS,
+                        attempt + 1,
+                        SESSION_RETRY_ATTEMPTS,
+                    )
+                    await asyncio.sleep(SESSION_RETRY_DELAY_SECONDS)
+
+            raise UpdateFailed(f"BLE read failed: {last_err}") from last_err

@@ -5,8 +5,10 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, CONF_NAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
-from .coordinator import PowerNIDataUpdateCoordinator
+from .const import DOMAIN
+from .coordinator import STORE_VERSION, PowerNIDataUpdateCoordinator
 
 PowerNIConfigEntry = ConfigEntry[PowerNIDataUpdateCoordinator]
 
@@ -19,6 +21,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> b
     name = entry.data.get(CONF_NAME) or entry.title or f"Power NI {address}"
 
     coordinator = PowerNIDataUpdateCoordinator(hass, entry, address, name)
+    await coordinator.async_load_stored_state()
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
@@ -36,3 +39,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: PowerNIConfigEntry)
 async def async_unload_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the stored top-up state when the meter is removed."""
+    await Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()

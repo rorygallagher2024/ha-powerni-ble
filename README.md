@@ -10,16 +10,21 @@ Read live electricity telemetry from Power NI **Keypad+ Freedom Units** (`B#####
 
 | Entity | Category | Description | Unit | Device / State Class |
 | --- | --- | --- | --- | --- |
-| **Balance** | Sensor | Remaining Keypad+ credit balance | `GBP` | `monetary` |
+| **Balance** | Sensor | Remaining Keypad+ credit balance (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
 | **Days left** | Sensor | Estimated days remaining (`status` attribute e.g. `ABOUT 51`) | `d` | `measurement` |
 | **Current load** | Sensor | Instantaneous power draw | `kW` | `power` / `measurement` |
 | **Current cost rate** | Sensor | Current hourly cost at active load | `GBP/h` | `measurement` |
 | **Total import energy** | Sensor | Cumulative import meter register (Energy Dashboard ready) | `kWh` | `energy` / `total_increasing` |
-| **Yesterday's spend** | Sensor | Previous day electricity spend | `GBP` | `monetary` |
-| **Last 7 days spend** | Sensor | Rolling 7-day spend | `GBP` | `monetary` |
-| **Last month spend** | Sensor | Previous month spend | `GBP` | `monetary` |
+| **Yesterday's spend** | Sensor | Previous day electricity spend | `GBP` | `monetary` / `total` |
+| **Last 7 days spend** | Sensor | Rolling 7-day spend | `GBP` | `monetary` / `total` |
+| **Last month spend** | Sensor | Previous month spend | `GBP` | `monetary` / `total` |
+| **Last top-up** | Sensor | Estimated last top-up amount (`balance_before` / `balance_after` attributes) | `GBP` | `monetary` |
+| **Last top-up time** | Sensor | When the last top-up was detected | — | `timestamp` |
+| **Last successful read** | Diagnostic | Timestamp of the most recent successful BLE poll | — | `timestamp` |
 | **Refresh** | Control | Button triggering an immediate on-demand BLE read | — | `button` |
 | **Poll interval** | Configuration | Adjustable polling interval synced with **Configure** (`1`–`1440` min) | `min` | `number` (`duration`) |
+
+Every meter reading sensor carries a `last_read` ISO timestamp attribute showing when that specific field was actually returned by the meter, and remains available across temporary BLE drops until its value is older than `max(24 hours, 3 × poll_interval)`.
 
 ## Compatibility
 
@@ -103,6 +108,11 @@ Alongside the **Configure** dialog, the integration exposes a **Poll interval** 
 - Changes made on a dashboard, via automations (`number.set_value`), or in **Configure** stay synced with each other and persist across restarts.
 - Adjusting the interval reschedules the coordinator's timer in-place without reloading entities or forcing an immediate BLE read.
 - You can also trigger an immediate read at any time with the **Refresh** button entity (or `homeassistant.update_entity`).
+
+## Top-Up Detection & Resilience
+
+- **Top-up detection (`powerni_ble_top_up`):** When a freshly read **Balance** rises by at least `£1.00` compared to the previous fresh reading (persisted across Home Assistant restarts), the integration updates **Last top-up** and **Last top-up time** and fires a `powerni_ble_top_up` event with `device_id`, `address`, `name`, `amount`, `balance_before`, and `balance_after`. Because the meter only exposes net balance, `amount` is an estimate slightly reduced by any electricity used between the two polls.
+- **Disconnect recovery & staleness:** If the BLE connection drops mid-poll, the client aborts waiting immediately (without wiping the GATT service cache), waits briefly for the meter radio to return to idle, and retries once inside the same poll before falling back to shortened `1 / 2 / 5` minute retries. Existing sensor readings remain available with their `last_read` timestamp until they exceed `max(24 hours, 3 × poll_interval)`.
 
 Example automation that polls every **2 minutes** during the day while someone is home and slows down to every **30 minutes** overnight:
 

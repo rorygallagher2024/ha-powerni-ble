@@ -46,6 +46,11 @@ RETRY_BACKOFF_MINUTES = (1, 2, 5)
 # can never hold the connection lock and block later polls.
 POLL_TIMEOUT_SECONDS = 180
 
+# Retry a transient mid-session BLE drop or protocol timeout once inside the
+# same poll after letting the Freedom Unit's BLE radio return to idle.
+SESSION_RETRY_ATTEMPTS = 2
+SESSION_RETRY_DELAY_SECONDS = 3.0
+
 
 # Groups of readings fetched in one poll. Balance/days-left is read on every
 # poll; slow-changing groups are only re-read when they are due, which keeps
