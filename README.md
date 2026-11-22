@@ -47,9 +47,11 @@
 | **Last top-up** | Sensor | Estimated last top-up amount (`balance_before` / `balance_after` attributes) | `GBP` | `monetary` |
 | **Last top-up time** | Sensor | Timestamp when the last top-up was detected | — | `timestamp` |
 | **Last successful read** | Diagnostic | Timestamp of the most recent successful BLE poll | — | `timestamp` |
-| **Poll status** | Diagnostic | Live BLE poll state (`idle`, `connecting`, `reading`, `retrying`, `error`) | — | `enum` |
+| **Poll status** | Diagnostic | Live BLE poll state (`idle`, `connecting`, `reading`, `retrying`, `waiting`, `error`) | — | `enum` |
+| **Signal strength** | Diagnostic | Smoothed Bluetooth RSSI (rolling median) from the selected adapter or proxy | `dBm` | `signal_strength` / `measurement` |
 | **Updating** | Diagnostic | `on` while connecting, reading, or retrying a BLE poll | — | `binary_sensor` (`running`) |
 | **Refresh** | Control | Button triggering an immediate full BLE read across all sections | — | `button` |
+| **Sync energy history** | Configuration | Button importing up to 14 days of 30-minute meter history (`0xA0`) | — | `button` |
 | **Poll interval** | Configuration | Adjustable polling interval synced with **Configure** (`1`–`1440` min) | `min` | `number` (`duration`) |
 
 ## How Polling Works
@@ -64,14 +66,21 @@ The Freedom Unit only allows one Bluetooth connection at a time. To keep BLE ses
 | **Current load** & **Current cost rate** | Every poll | Live demand and hourly rate |
 | **Total import energy** | Once per hour | Also read on startup and **Refresh** |
 | **Yesterday / Last 7 days / Last month spend** | Every 6 hours & after midnight | Also read on startup and **Refresh** |
+| **30-min energy survey (`0xA0`)** | Every 6 hours (background) | Backfills completed hourly `kWh` buckets into Long-Term Statistics |
 
 ### Live Feedback & Resilience
 
+- **Broadcast-aware polling:** Listens to per-address BLE advertisements from the meter. If broadcasts stop (for example while the mobile app holds the meter's single connection), scheduled polls pause cleanly in **`Waiting for meter`** status without logging failures and catch up immediately once broadcasts resume.
 - **Live refresh feedback:** Pressing **Refresh** immediately transitions **Poll status** (`Connecting` → `Reading` → `Idle`) and flips **Updating** (`on` → `off`). Sections publish progressively during the session, so **Balance**, **Days left**, and **Current load** appear in ~6–10 seconds without waiting for spend history to finish.
 - **Disconnect detection & in-poll retry:** If a BLE link drops mid-session, the client aborts waiting immediately without clearing a healthy GATT cache, waits 3 seconds for the meter radio to return to idle, and retries once within the same poll before falling back to shortened `1 / 2 / 5` minute retries.
 - **Age-based availability:** Every meter reading sensor carries a `last_read` ISO timestamp attribute showing when that field was actually returned by the meter, and stays available across brief BLE interruptions until older than `max(24 hours, 3 × poll_interval)`.
 
 ## Compatibility
+
+### Home Assistant Version
+
+- **Requires Home Assistant `2026.10.0` or newer** (uses `bluetooth.async_register_advertisement_callback` for raw per-address advertisement callbacks in broadcast-aware polling and modern recorder external statistics metadata).
+- Tested live on **Home Assistant `2026.11.1`**.
 
 ### Freedom Unit Hardware
 
@@ -126,6 +135,8 @@ Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 
 > If your Freedom Unit ignores pairing or stops advertising, reset its internal Bluetooth radio from the keypad by entering **`*159268#`** (`B#######` units) or **`*0#`** (`PNI#####` units).
 
 ## Installation
+
+Requires **Home Assistant `2026.10.0` or newer**.
 
 ### HACS (Custom Repository)
 
@@ -219,13 +230,16 @@ actions:
 
 ## Energy Dashboard
 
-**Total import energy** (`kWh`, `device_class: energy`, `state_class: total_increasing`) works directly with Home Assistant's built-in **Energy** dashboard:
+The integration provides two ways to feed Home Assistant's **Energy** dashboard:
+
+- **`Total import energy` sensor** (`kWh`, integer precision): updates on live polls as whole kilowatt-hours tick up.
+- **`Energy history` external statistic** (`powerni_ble:<mac>_energy_history`, `0.00625 kWh` counter resolution): backfills up to 14 days of completed hourly energy totals from the meter's 30-minute internal survey (`0xA0`) and fills any gaps if Home Assistant was offline. Press **Sync energy history** at any time to run a full 14-day import immediately.
 
 1. Open **Settings → Dashboards → Energy**.
 2. Choose the section matching your setup:
-   - **Electricity grid → Add consumption:** Select **Total import energy** to track grid import alongside solar or battery systems, and optionally add a static or entity tariff price (`GBP/kWh`).
-   - **Home consumption:** Select **Total import energy** under **Home energy** (and optionally **Current load** under **Home power**) if monitoring whole-home electricity directly from the Freedom Unit, then click **Save**.
-3. Wait 1–2 hours for Home Assistant's hourly Long-Term Statistics bars to appear.
+   - **Electricity grid → Add consumption:** Select **Total import energy** (or **`<meter> Energy history`** for 0.006 kWh hourly resolution) to track grid import alongside solar or battery systems, and optionally add a static or entity tariff price (`GBP/kWh`).
+   - **Home consumption:** Select **Total import energy** (or **`<meter> Energy history`**) under **Home energy** and optionally **Current load** under **Home power** if monitoring whole-home electricity directly from the Freedom Unit, then click **Save**.
+3. Wait 1–2 hours for Home Assistant's hourly Long-Term Statistics bars to update (historical `Energy history` bars appear right after the first survey sync).
 
 <p align="center">
   <img src="docs/images/energy-dashboard.png" alt="Adding Total import energy to the Home Assistant Energy Dashboard" width="480" />
@@ -267,10 +281,8 @@ actions:
 
 ## Future Roadmap
 
-- **Broadcast-aware polling:** Listen to per-address BLE advertisements so polling pauses cleanly while the mobile app holds the meter connection and resumes immediately when the meter starts advertising again.
 - **Actionable pairing diagnostics & HA Repairs:** Raise clear Repair issues when an unbonded proxy hits `Insufficient authorization (8)`, identifying the proxy that needs bonding.
 - **Automatic bonded-proxy detection & stickiness:** Remember which proxy succeeds and prefer it automatically without manual pinning.
 - **Zero-CLI ESPHome pairing helper:** Expose the passkey and pairing status via ESPHome `text_sensor` / `button` entities directly in Home Assistant.
-- **14-day half-hourly survey backfill (`0xA0`):** Import the meter's stored 30-minute `kWh` history into Home Assistant Long-Term Statistics.
 - **12-month historical spend (`JAN`–`DEC`) & meter serial (`0x80`):** Parse the remaining monthly spend frames from `0xC2 0x32` and binary serial/diagnostics frames from `0x80`.
 - **Notification Blueprint:** Pre-built Blueprint for low-credit, low-days-remaining, and top-up notifications.

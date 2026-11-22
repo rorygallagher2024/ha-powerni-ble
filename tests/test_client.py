@@ -28,8 +28,16 @@ from custom_components.powerni_ble.client import (  # noqa: E402
     PowerNIDisconnectedError,
     PowerNIMeterData,
     PowerNIProtocolError,
+    SurveyFrameAssembler,
     async_read_meter,
+    async_read_survey,
     merge_meter_data,
+)
+from custom_components.powerni_ble.survey import (  # noqa: E402
+    aggregate_hourly,
+    counter_delta_kwh,
+    decode_survey_date,
+    parse_survey_blocks,
 )
 from custom_components.powerni_ble.tracking import (  # noqa: E402
     detect_top_up,
@@ -38,12 +46,15 @@ from custom_components.powerni_ble.tracking import (  # noqa: E402
     stale_after,
 )
 from custom_components.powerni_ble.const import (  # noqa: E402
+    ALL_SECTIONS,
     CMD_DISPLAY_RESET,
     CMD_ENTER_TRANSPARENT,
     CMD_GET_BALANCE,
     CMD_KEEPALIVE,
     CMD_LEAVE_TRANSPARENT,
     CMD_PREV_USAGE,
+    CMD_READ_SURVEY,
+    CMD_SURVEY_NEXT,
     CMD_TOTAL_CONSUMPTION,
     CMD_TOTAL_UNITS,
     DEFAULT_SCAN_INTERVAL_MINUTES,
@@ -52,8 +63,10 @@ from custom_components.powerni_ble.const import (  # noqa: E402
     NOTIFY_UUID,
     RSP_DISCONNECT_ACK,
     RSP_KEEPALIVE_ACK,
+    RSP_SURVEY_ACK,
+    RSP_SURVEY_BLOCK_HEADER,
+    RSP_SURVEY_END,
     RSP_TRANSPARENT_ACK,
-    ALL_SECTIONS,
     SECTION_BALANCE,
     SECTION_LIVE,
     SECTION_SPEND,
@@ -748,17 +761,19 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(len(snapshots), 3)
-        # Snapshot 1: only balance/days left read so far
+        # Snapshot 1: only balance/days left delta
         self.assertEqual(snapshots[0].balance, 14.25)
         self.assertEqual(snapshots[0].days_left, 12)
         self.assertIsNone(snapshots[0].current_load_kw)
         self.assertIsNone(snapshots[0].total_import_kwh)
-        # Snapshot 2: live load/cost added, units not yet read
-        self.assertEqual(snapshots[1].balance, 14.25)
+        # Snapshot 2: only live load/cost delta
+        self.assertIsNone(snapshots[1].balance)
         self.assertEqual(snapshots[1].current_load_kw, 0.452)
         self.assertEqual(snapshots[1].current_cost_per_hour, 0.14)
         self.assertIsNone(snapshots[1].total_import_kwh)
-        # Snapshot 3: cumulative import kWh added, spend returned on final result
+        # Snapshot 3: only cumulative import kWh delta
+        self.assertIsNone(snapshots[2].balance)
+        self.assertIsNone(snapshots[2].current_load_kw)
         self.assertEqual(snapshots[2].total_import_kwh, 12345)
         self.assertIsNone(snapshots[2].yesterday_cost)
         self.assertEqual(final.yesterday_cost, 3.20)
@@ -800,7 +815,196 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(snapshots), 2)
         self.assertEqual(snapshots[0].balance, 14.25)
         self.assertIsNone(snapshots[0].current_load_kw)
+        self.assertIsNone(snapshots[1].balance)
         self.assertEqual(snapshots[1].current_load_kw, 0.452)
+
+
+def encode_survey_counter_block(c0: int, c1: int, c2: int, c3: int) -> bytes:
+    """Encode 4 13-bit half-hour counters into a 10-byte 0x8A survey block."""
+    return (
+        bytes([RSP_SURVEY_BLOCK_HEADER])
+        + c0.to_bytes(2, "little")
+        + c1.to_bytes(2, "little")
+        + c2.to_bytes(2, "little")
+        + c3.to_bytes(2, "little")
+        + b"\x00"
+    )
+
+
+def encode_survey_date_block(day: datetime) -> bytes:
+    """Encode a midnight date into the 13th 0x8A survey header block."""
+    jan1 = datetime(day.year, 1, 1, tzinfo=day.tzinfo)
+    day_offset = (day - jan1).days
+    word = ((day.year - 1988) << 9) | (day_offset & 0x1FF)
+    return bytes([RSP_SURVEY_BLOCK_HEADER]) + word.to_bytes(2, "little") + b"\x00\xfe\xff" + b"\x00" * 4
+
+
+def encode_survey_day(day: datetime, counters: list[int]) -> list[bytes]:
+    """Encode 48 half-hour counters + date header into 13 survey blocks."""
+    assert len(counters) == 48
+    blocks = [
+        encode_survey_counter_block(*counters[i : i + 4]) for i in range(0, 48, 4)
+    ]
+    blocks.append(encode_survey_date_block(day))
+    return blocks
+
+
+class TestSurveyParser(unittest.TestCase):
+    """Tests for 0xA0 binary survey date decoding, wrap-around, and hourly rollup."""
+
+    def test_decode_survey_date_and_counter_wraparound(self) -> None:
+        day = datetime(2026, 11, 22, tzinfo=timezone.utc)
+        header = encode_survey_date_block(day)
+        self.assertEqual(decode_survey_date(header), day)
+        self.assertIsNone(decode_survey_date(b"\x00\x00\x00"))
+        self.assertEqual(counter_delta_kwh(100, 180), 0.5)
+        self.assertEqual(counter_delta_kwh(7990, 10), round(20 * 0.00625, 5))
+        self.assertEqual(counter_delta_kwh(None, 100), 0.0)
+
+    def test_parse_multi_day_newest_first_and_aggregate_hourly(self) -> None:
+        day1 = datetime(2026, 11, 21, tzinfo=timezone.utc)
+        day2 = datetime(2026, 11, 22, tzinfo=timezone.utc)
+
+        # Build constant +16 counts (0.1 kWh) per half-hour across day1 -> day2 (00:00..02:30 populated on day2)
+        c1 = [1000 + i * 16 for i in range(48)]
+        last_c1 = c1[-1]
+        c2 = [last_c1 + (i + 1) * 16 for i in range(6)] + [0x1FFF] * 42
+
+        # Meter sends newest day first
+        blocks = encode_survey_day(day2, c2) + encode_survey_day(day1, c1)
+        slots = parse_survey_blocks(blocks, tz=timezone.utc)
+        self.assertEqual(len(slots), 96)
+        self.assertEqual(slots[0].start, day1)
+        self.assertFalse(slots[0].has_baseline)
+        # First hour of day2 crosses midnight cleanly using day1's 23:30 counter
+        self.assertEqual(slots[48].start, day2)
+        self.assertTrue(slots[48].has_baseline)
+        self.assertEqual(slots[48].kwh, 0.1)
+
+        # Current time = 2026-11-22 02:45 UTC -> hour 02:00 is incomplete (and 02:30 is empty)
+        now = datetime(2026, 11, 22, 2, 45, tzinfo=timezone.utc)
+        hourly = aggregate_hourly(slots, now)
+        # day1 has hours 01:00..23:00 (23 hours, since hour 00:00 lacks pre-day1 baseline) + day2 hours 00:00..01:00 (2 hours)
+        self.assertEqual(len(hourly), 25)
+        self.assertEqual(hourly[0].start, day1 + timedelta(hours=1))
+        self.assertEqual(hourly[-1].start, day2 + timedelta(hours=1))
+        self.assertTrue(all(h.kwh == 0.2 for h in hourly))
+
+
+class TestAsyncReadSurvey(unittest.IsolatedAsyncioTestCase):
+    """Tests for SurveyFrameAssembler and async_read_survey."""
+
+    def test_survey_frame_assembler_handles_split_blocks_and_payload_fc(self) -> None:
+        asm = SurveyFrameAssembler()
+        # Block whose payload contains 0xFC and 0xFF inside counter bytes
+        block = bytes([RSP_SURVEY_BLOCK_HEADER, 0xFC, 0xFF, 1, 0, 2, 0, 3, 0, 0])
+        c, b, ack, end = asm.feed(bytes([RSP_SURVEY_ACK]) + block[:4])
+        self.assertEqual((c, b, ack, end), ([], [], True, False))
+        c2, b2, ack2, end2 = asm.feed(block[4:] + RSP_KEEPALIVE_ACK[:2])
+        self.assertEqual((c2, b2, ack2, end2), ([], [block], False, False))
+        c3, b3, ack3, end3 = asm.feed(RSP_KEEPALIVE_ACK[2:] + bytes([RSP_SURVEY_END]))
+        self.assertEqual((c3, b3, ack3, end3), ([RSP_KEEPALIVE_ACK], [], False, True))
+
+    async def test_async_read_survey_reads_day_keepalive_and_end_marker(self) -> None:
+        day = datetime(2026, 11, 22, tzinfo=timezone.utc)
+        blocks = encode_survey_day(day, [100 + i for i in range(48)])
+        script = {
+            CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+            CMD_READ_SURVEY: [[bytes([RSP_SURVEY_ACK])]],
+            CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
+            CMD_SURVEY_NEXT: [[b] for b in blocks] + [[bytes([RSP_SURVEY_END])]],
+            CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+        }
+        client = FakeBleakClient(script)
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "SURVEY_PACING_DELAY", 0.0),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            out = await async_read_survey(client, days=2)  # type: ignore[arg-type]
+
+        self.assertEqual(out, blocks)
+        self.assertEqual(client.writes[-1][1], CMD_LEAVE_TRANSPARENT)
+
+    async def test_async_read_survey_aborts_immediately_on_disconnect(self) -> None:
+        disconnected = asyncio.Event()
+
+        class DropOnSurveyClient(FakeBleakClient):
+            is_connected = True
+
+            async def write_gatt_char(
+                self, uuid: str, data: bytes, response: bool = False
+            ) -> None:
+                await super().write_gatt_char(uuid, data, response)
+                if data == CMD_SURVEY_NEXT:
+                    self.is_connected = False
+                    disconnected.set()
+
+        client = DropOnSurveyClient(
+            {
+                CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+                CMD_READ_SURVEY: [[bytes([RSP_SURVEY_ACK])]],
+            }
+        )
+        started = time.monotonic()
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "SURVEY_PACING_DELAY", 0.0),
+            self.assertRaises(PowerNIDisconnectedError),
+        ):
+            await async_read_survey(
+                client,  # type: ignore[arg-type]
+                days=1,
+                disconnected=disconnected,
+            )
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    async def test_async_read_survey_retries_single_dropped_f1_when_buffer_empty(self) -> None:
+        day = datetime(2026, 11, 22, tzinfo=timezone.utc)
+        blocks = encode_survey_day(day, [100 + i for i in range(48)])
+        script = {
+            CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+            CMD_READ_SURVEY: [[bytes([RSP_SURVEY_ACK])]],
+            CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
+            CMD_SURVEY_NEXT: (
+                [[], [blocks[0]]] + [[b] for b in blocks[1:]] + [[bytes([RSP_SURVEY_END])]]
+            ),
+            CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+        }
+        client = FakeBleakClient(script)
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "SURVEY_PACING_DELAY", 0.0),
+            patch.object(client_mod, "LINE_TIMEOUT", 0.03),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            out = await async_read_survey(client, days=2)  # type: ignore[arg-type]
+
+        self.assertEqual(out, blocks)
+        f1_writes = [w for w in client.writes if w[1] == CMD_SURVEY_NEXT]
+        self.assertEqual(len(f1_writes), len(blocks) + 2)
+
+    async def test_async_read_survey_does_not_retry_with_pending_partial_bytes(self) -> None:
+        partial = bytes([RSP_SURVEY_BLOCK_HEADER, 0x01, 0x02, 0x03])
+        script = {
+            CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+            CMD_READ_SURVEY: [[bytes([RSP_SURVEY_ACK])]],
+            CMD_SURVEY_NEXT: [[partial]],
+            CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+        }
+        client = FakeBleakClient(script)
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "SURVEY_PACING_DELAY", 0.0),
+            patch.object(client_mod, "LINE_TIMEOUT", 0.03),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            with self.assertRaises(PowerNIProtocolError) as ctx:
+                await async_read_survey(client, days=1)  # type: ignore[arg-type]
+
+        self.assertIn("pending='8a 01 02 03'", str(ctx.exception))
+        f1_writes = [w for w in client.writes if w[1] == CMD_SURVEY_NEXT]
+        self.assertEqual(len(f1_writes), 1)
 
 
 if __name__ == "__main__":

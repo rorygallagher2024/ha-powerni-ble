@@ -1,6 +1,9 @@
 {
   "domain": "powerni_ble",
   "name": "Power NI Keypad+ BLE",
+  "after_dependencies": [
+    "recorder"
+  ],
   "bluetooth": [
     {
       "service_uuid": "49535343-fe7d-4ae5-8fa9-9fafd205e455"
@@ -27,5 +30,5 @@
     "custom_components.powerni_ble"
   ],
   "requirements": [],
-  "version": "0.3.1"
+  "version": "0.4.0"
 }

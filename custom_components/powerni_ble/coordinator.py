@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
+from statistics import median
+import time
 from typing import Any
 
 from bleak.backends.device import BLEDevice
@@ -13,38 +17,60 @@ from bleak.exc import BleakCharacteristicNotFoundError, BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+    async_add_external_statistics,
+    get_last_statistics,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import UnitOfEnergy
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import EnergyConverter
 
 from .client import (
     PowerNIMeterData,
     PowerNIProtocolError,
     async_read_meter,
+    async_read_survey,
     merge_meter_data,
 )
 from .const import (
+    ADVERTISEMENT_SILENT_SECONDS,
     CONF_PROXY_SOURCE,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
+    FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS,
     POLL_STATUS_CONNECTING,
     POLL_STATUS_ERROR,
     POLL_STATUS_IDLE,
     POLL_STATUS_READING,
     POLL_STATUS_RETRYING,
+    POLL_STATUS_WAITING,
     POLL_TIMEOUT_SECONDS,
+    RSSI_MEDIAN_WINDOW,
+    RSSI_MIN_PUBLISH_INTERVAL_SECONDS,
     SECTION_SPEND,
     SECTION_UNITS,
     SESSION_RETRY_ATTEMPTS,
     SESSION_RETRY_DELAY_SECONDS,
+    SURVEY_INCREMENTAL_DAYS,
+    SURVEY_MAX_DAYS,
+    SURVEY_SYNC_INTERVAL,
+    SURVEY_TIMEOUT_SECONDS,
     clamp_scan_interval,
     retry_interval_minutes,
     sections_due,
 )
+from .survey import aggregate_hourly, parse_survey_blocks
 from .tracking import (
     detect_top_up,
     fresh_fields,
@@ -58,6 +84,9 @@ _LOGGER = logging.getLogger(__name__)
 EVENT_TOP_UP = f"{DOMAIN}_top_up"
 STORE_VERSION = 1
 STORE_SAVE_DELAY_SECONDS = 10
+RSSI_PUBLISH_THRESHOLD_DBM = 3
+SURVEY_BACKGROUND_DELAY_SECONDS = 1.0
+SURVEY_FAILURE_COOLDOWN = timedelta(minutes=30)
 
 
 @dataclass(frozen=True)
@@ -102,6 +131,15 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         self.last_top_up: TopUp | None = None
         self.poll_status: str = POLL_STATUS_IDLE
         self.last_error: str | None = None
+        self._last_adv_monotonic: float | None = None
+        self._rssi_samples: deque[int] = deque(maxlen=RSSI_MEDIAN_WINDOW)
+        self._last_published_rssi: int | None = None
+        self._last_rssi_publish_monotonic: float | None = None
+        self._poll_deferred: bool = False
+        self._last_failure_monotonic: float | None = None
+        self._last_survey_sync: datetime | None = None
+        self._last_survey_attempt: datetime | None = None
+        self._survey_task: asyncio.Task[None] | None = None
         # Last freshly read balance, compared with the next to detect top-ups.
         self._top_up_baseline: float | None = None
         self._store: Store[dict[str, Any]] = Store(
@@ -144,6 +182,11 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         return True
 
     @property
+    def rssi(self) -> int | None:
+        """Return the rolling median connectable RSSI in dBm."""
+        return round(median(self._rssi_samples)) if self._rssi_samples else None
+
+    @property
     def is_polling(self) -> bool:
         """Return True while a BLE poll or in-poll retry is active."""
         return self.poll_status in (
@@ -151,6 +194,97 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             POLL_STATUS_READING,
             POLL_STATUS_RETRYING,
         )
+
+    def async_start_advertisement_listener(self) -> Callable[[], None]:
+        """Listen to every connectable advertisement from the meter."""
+        self._seed_initial_rssi()
+        return bluetooth.async_register_advertisement_callback(
+            self.hass, self._on_advertisement, self.address
+        )
+
+    def _seed_initial_rssi(self) -> None:
+        """Populate initial RSSI from Home Assistant's scanner cache if available."""
+        for scanner_dev in bluetooth.async_scanner_devices_by_address(
+            self.hass, self.address, connectable=True
+        ):
+            if (
+                self.proxy_source
+                and scanner_dev.scanner.source.upper() != self.proxy_source.upper()
+            ):
+                continue
+            if scanner_dev.advertisement.rssi is not None:
+                self._rssi_samples.append(scanner_dev.advertisement.rssi)
+                self._last_published_rssi = self.rssi
+                self._last_rssi_publish_monotonic = time.monotonic()
+            break
+
+    @callback
+    def _on_advertisement(self, service_info: BluetoothServiceInfoBleak) -> None:
+        """Track advertisement liveness and trigger catch-up polls when visible."""
+        if not service_info.connectable:
+            return
+        if (
+            self.proxy_source
+            and service_info.source.upper() != self.proxy_source.upper()
+        ):
+            return
+
+        now_mono = time.monotonic()
+        prev_adv_monotonic = self._last_adv_monotonic
+        self._last_adv_monotonic = now_mono
+        if service_info.rssi is not None:
+            self._rssi_samples.append(service_info.rssi)
+
+        if self._poll_deferred and not self.is_polling:
+            self._poll_deferred = False
+            _LOGGER.debug(
+                "Power NI meter %s advertisements resumed; triggering catch-up poll",
+                self.address,
+            )
+            self.hass.async_create_task(self.async_request_refresh())
+            return
+
+        adv_resumed_after_gap = (
+            prev_adv_monotonic is None
+            or (now_mono - prev_adv_monotonic) >= FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS
+        )
+        if (
+            self._consecutive_failures > 0
+            and not self.is_polling
+            and adv_resumed_after_gap
+            and (
+                self._last_failure_monotonic is None
+                or (now_mono - self._last_failure_monotonic)
+                >= FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS
+            )
+        ):
+            self._last_failure_monotonic = now_mono
+            _LOGGER.debug(
+                "Power NI meter %s advertising after failure #%d; triggering recovery poll",
+                self.address,
+                self._consecutive_failures,
+            )
+            self.hass.async_create_task(self.async_request_refresh())
+            return
+
+        current_rssi = self.rssi
+        if (
+            self._listeners
+            and current_rssi is not None
+            and (
+                self._last_published_rssi is None
+                or abs(current_rssi - self._last_published_rssi)
+                >= RSSI_PUBLISH_THRESHOLD_DBM
+            )
+            and (
+                self._last_rssi_publish_monotonic is None
+                or (now_mono - self._last_rssi_publish_monotonic)
+                >= RSSI_MIN_PUBLISH_INTERVAL_SECONDS
+            )
+        ):
+            self._last_published_rssi = current_rssi
+            self._last_rssi_publish_monotonic = now_mono
+            self.async_update_listeners()
 
     def _set_poll_status(self, status: str, *, error: str | None = None) -> None:
         """Update live poll status and push to Home Assistant listeners."""
@@ -189,6 +323,12 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         new_proxy = (options.get(CONF_PROXY_SOURCE) or "").strip()
         if new_proxy != self.proxy_source:
             self.proxy_source = new_proxy
+            self._last_adv_monotonic = None
+            self._rssi_samples.clear()
+            self._last_published_rssi = None
+            self._last_rssi_publish_monotonic = None
+            self._poll_deferred = False
+            self._seed_initial_rssi()
             _LOGGER.debug(
                 "Updated Bluetooth proxy source for %s (%s) to %s",
                 self.device_name,
@@ -206,6 +346,18 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             )
         )
 
+    def _check_and_notify_stale(self, now: datetime) -> None:
+        """Notify listeners if any readings have crossed the staleness threshold."""
+        max_age = stale_after(self.scan_interval_minutes)
+        newly_stale = {
+            field
+            for field, ts in self.field_read_at.items()
+            if is_stale(ts, now, max_age)
+        } - self._stale_notified
+        if newly_stale:
+            self._stale_notified.update(newly_stale)
+            self.async_update_listeners()
+
     def _record_result(self, success: bool) -> None:
         """Track consecutive failures and adjust the next poll delay."""
         if success:
@@ -217,8 +369,10 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                     self._consecutive_failures,
                 )
             self._consecutive_failures = 0
+            self._last_failure_monotonic = None
         else:
             self._consecutive_failures += 1
+            self._last_failure_monotonic = time.monotonic()
         # DataUpdateCoordinator schedules the next refresh from update_interval
         # after this update returns, so setting it here takes effect immediately.
         self.update_interval = self._next_interval()
@@ -229,16 +383,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 self.update_interval,
                 self._consecutive_failures,
             )
-            now = dt_util.now()
-            max_age = stale_after(self.scan_interval_minutes)
-            newly_stale = {
-                field
-                for field, ts in self.field_read_at.items()
-                if is_stale(ts, now, max_age)
-            } - self._stale_notified
-            if newly_stale:
-                self._stale_notified.update(newly_stale)
-                self.async_update_listeners()
+            self._check_and_notify_stale(dt_util.now())
 
     async def async_request_full_refresh(self) -> None:
         """Refresh now, reading every value regardless of schedule."""
@@ -355,6 +500,24 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
     async def _async_update_data(self) -> PowerNIMeterData:
         """Poll the meter, keeping last-known values for fields a read missed."""
         now = dt_util.now()
+        if (
+            not self._force_full_read
+            and self.data is not None
+            and self._last_adv_monotonic is not None
+            and (time.monotonic() - self._last_adv_monotonic)
+            > ADVERTISEMENT_SILENT_SECONDS
+        ):
+            self._poll_deferred = True
+            self._check_and_notify_stale(now)
+            self._set_poll_status(POLL_STATUS_WAITING)
+            _LOGGER.debug(
+                "Deferring poll for %s: no connectable advertisement for %.0fs",
+                self.address,
+                time.monotonic() - self._last_adv_monotonic,
+            )
+            return self.data
+
+        self._poll_deferred = False
         sections = sections_due(
             now,
             self._section_last_read,
@@ -386,6 +549,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         self._force_full_read = False
         self._mark_sections_read(new_data, now)
         self.last_successful_read = now
+        self._last_published_rssi = self.rssi
+        self._last_rssi_publish_monotonic = time.monotonic()
         record_read_times(self.field_read_at, new_data, now)
         self._stale_notified.difference_update(fresh_fields(new_data))
         if new_data.days_left_status is not None:
@@ -401,22 +566,173 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             )
         self.poll_status = POLL_STATUS_IDLE
         self.last_error = None
+        self._maybe_schedule_survey_sync(now)
         return merged
+
+    def _maybe_schedule_survey_sync(self, now: datetime) -> None:
+        """Schedule background 30-min energy history backfill when due."""
+        if "recorder" not in self.hass.config.components:
+            return
+        if self._survey_task is not None and not self._survey_task.done():
+            return
+        if (
+            self._last_survey_sync is not None
+            and now - self._last_survey_sync < SURVEY_SYNC_INTERVAL
+        ):
+            return
+        if (
+            self._last_survey_attempt is not None
+            and now - self._last_survey_attempt < SURVEY_FAILURE_COOLDOWN
+        ):
+            return
+        self._survey_task = self.hass.async_create_background_task(
+            self._async_background_survey_sync(),
+            name=f"{DOMAIN}_{self.address}_survey",
+        )
+
+    async def _async_background_survey_sync(self) -> None:
+        """Run periodic survey sync without blocking or failing normal polls."""
+        try:
+            await asyncio.sleep(SURVEY_BACKGROUND_DELAY_SECONDS)
+            await self.async_sync_energy_history(full=False)
+        except (BleakError, PowerNIProtocolError, TimeoutError, UpdateFailed) as err:
+            _LOGGER.warning(
+                "Background energy survey sync failed for %s: %s",
+                self.address,
+                err,
+            )
+
+    def _require_ble_device(self) -> BLEDevice:
+        """Return a connectable BLEDevice or raise UpdateFailed."""
+        ble_device = self._get_ble_device()
+        if ble_device is not None:
+            return ble_device
+        if self.proxy_source:
+            raise UpdateFailed(
+                f"Configured Bluetooth proxy {self.proxy_source} cannot currently see {self.address}"
+            )
+        raise UpdateFailed(
+            f"No connectable Bluetooth proxy or adapter can currently see {self.address}"
+        )
+
+    async def async_sync_energy_history(self, *, full: bool = False) -> int:
+        """Read 0xA0 half-hourly survey blocks and import into external statistics."""
+        if "recorder" not in self.hass.config.components:
+            _LOGGER.warning(
+                "Recorder integration is not active; skipping energy history sync for %s",
+                self.address,
+            )
+            return 0
+
+        self._last_survey_attempt = dt_util.now()
+        statistic_id = (
+            f"{DOMAIN}:{self.address.lower().replace(':', '_')}_energy_history"
+        )
+        last_stats = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics,
+            self.hass,
+            1,
+            statistic_id,
+            True,
+            {"sum"},
+        )
+        last_rows = last_stats.get(statistic_id) or []
+        days = SURVEY_MAX_DAYS if (full or not last_rows) else SURVEY_INCREMENTAL_DAYS
+        last_start: float | None = last_rows[0]["start"] if last_rows else None
+        running_sum = float(last_rows[0].get("sum") or 0.0) if last_rows else 0.0
+
+        async with self._connect_lock:
+            ble_device = self._require_ble_device()
+            client: BleakClientWithServiceCache | None = None
+            disconnected = asyncio.Event()
+
+            def _on_disconnect(_client: Any) -> None:
+                disconnected.set()
+
+            try:
+                self._set_poll_status(POLL_STATUS_CONNECTING)
+                client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    ble_device,
+                    self.device_name,
+                    disconnected_callback=_on_disconnect,
+                    ble_device_callback=self._get_ble_device,
+                    use_services_cache=True,
+                    pair=True,
+                    max_attempts=3,
+                )
+                self._set_poll_status(POLL_STATUS_READING)
+                async with asyncio.timeout(SURVEY_TIMEOUT_SECONDS):
+                    blocks = await async_read_survey(
+                        client,
+                        days=days,
+                        logger=_LOGGER,
+                        disconnected=disconnected,
+                    )
+            finally:
+                if client is not None and client.is_connected:
+                    try:
+                        await client.disconnect()
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.debug(
+                            "Ignoring error disconnecting survey client %s: %s",
+                            self.address,
+                            err,
+                        )
+                self._set_poll_status(POLL_STATUS_IDLE)
+
+        slots = parse_survey_blocks(blocks, tz=dt_util.get_default_time_zone())
+        hourly = aggregate_hourly(slots, dt_util.utcnow())
+        new_hours = [
+            hour
+            for hour in hourly
+            if last_start is None or hour.start.timestamp() > last_start
+        ]
+
+        self._last_survey_sync = dt_util.now()
+        if not new_hours:
+            _LOGGER.info(
+                "Energy history up to date for %s (read %d blocks, %d hourly buckets)",
+                self.address,
+                len(blocks),
+                len(hourly),
+            )
+            return 0
+
+        stat_rows: list[StatisticData] = []
+        for hour in new_hours:
+            running_sum = round(running_sum + hour.kwh, 5)
+            stat_rows.append(
+                StatisticData(start=hour.start, state=hour.kwh, sum=running_sum)
+            )
+
+        metadata = StatisticMetaData(
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name=f"{self.device_name} Energy history",
+            source=DOMAIN,
+            statistic_id=statistic_id,
+            unit_class=EnergyConverter.UNIT_CLASS,
+            unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        )
+        async_add_external_statistics(self.hass, metadata, stat_rows)
+        imported_kwh = round(sum(hour.kwh for hour in new_hours), 3)
+        _LOGGER.info(
+            "Imported %d hourly energy statistics (%.3f kWh, %s .. %s) into %s",
+            len(stat_rows),
+            imported_kwh,
+            new_hours[0].start.isoformat(),
+            new_hours[-1].start.isoformat(),
+            statistic_id,
+        )
+        return len(stat_rows)
 
     async def _async_poll(self, sections: frozenset[str]) -> PowerNIMeterData:
         """Connect over BLE, read telemetry, and disconnect."""
         async with self._connect_lock:
             last_err: Exception | None = None
             for attempt in range(1, SESSION_RETRY_ATTEMPTS + 1):
-                ble_device = self._get_ble_device()
-                if ble_device is None:
-                    if self.proxy_source:
-                        raise UpdateFailed(
-                            f"Configured Bluetooth proxy {self.proxy_source} cannot currently see {self.address}"
-                        )
-                    raise UpdateFailed(
-                        f"No connectable Bluetooth proxy or adapter can currently see {self.address}"
-                    )
+                ble_device = self._require_ble_device()
 
                 client: BleakClientWithServiceCache | None = None
                 details = getattr(ble_device, "details", None)

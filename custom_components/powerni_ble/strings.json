@@ -50,6 +50,7 @@
           "connecting": "Connecting",
           "reading": "Reading",
           "retrying": "Retrying",
+          "waiting": "Waiting for meter",
           "error": "Error"
         }
       }
