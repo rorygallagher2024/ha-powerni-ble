@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 
 from bleak.backends.device import BLEDevice
@@ -14,6 +14,7 @@ from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .client import (
     PowerNIMeterData,
@@ -27,8 +28,11 @@ from .const import (
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
     POLL_TIMEOUT_SECONDS,
+    SECTION_SPEND,
+    SECTION_UNITS,
     clamp_scan_interval,
     retry_interval_minutes,
+    sections_due,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,6 +60,9 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         )
         self._connect_lock = asyncio.Lock()
         self._consecutive_failures = 0
+        # When each slow reading group was last read successfully.
+        self._section_last_read: dict[str, datetime] = {}
+        self._force_full_read = False
 
         super().__init__(
             hass,
@@ -137,6 +144,25 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 self._consecutive_failures,
             )
 
+    async def async_request_full_refresh(self) -> None:
+        """Refresh now, reading every value regardless of schedule."""
+        self._force_full_read = True
+        await self.async_request_refresh()
+
+    def _mark_sections_read(self, data: PowerNIMeterData, now: datetime) -> None:
+        """Record which slow groups this read actually returned values for."""
+        if data.total_import_kwh is not None:
+            self._section_last_read[SECTION_UNITS] = now
+        if any(
+            value is not None
+            for value in (
+                data.yesterday_cost,
+                data.last_7_days_cost,
+                data.last_month_cost,
+            )
+        ):
+            self._section_last_read[SECTION_SPEND] = now
+
     def _get_ble_device(self) -> BLEDevice | None:
         """Resolve the target BLEDevice (optionally pinned to a specific proxy)."""
         if self.proxy_source:
@@ -152,9 +178,18 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
 
     async def _async_update_data(self) -> PowerNIMeterData:
         """Poll the meter, keeping last-known values for fields a read missed."""
+        now = dt_util.now()
+        sections = sections_due(
+            now,
+            self._section_last_read,
+            force_full=self._force_full_read or self.data is None,
+        )
+        _LOGGER.debug(
+            "Polling %s for sections: %s", self.address, ", ".join(sorted(sections))
+        )
         try:
             async with asyncio.timeout(POLL_TIMEOUT_SECONDS):
-                new_data = await self._async_poll()
+                new_data = await self._async_poll(sections)
         except TimeoutError as err:
             self._record_result(False)
             raise UpdateFailed(
@@ -164,6 +199,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             self._record_result(False)
             raise
         self._record_result(True)
+        self._force_full_read = False
+        self._mark_sections_read(new_data, now)
 
         merged, carried = merge_meter_data(new_data, self.data)
         if carried:
@@ -174,7 +211,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             )
         return merged
 
-    async def _async_poll(self) -> PowerNIMeterData:
+    async def _async_poll(self, sections: frozenset[str]) -> PowerNIMeterData:
         """Connect over BLE, read telemetry, and disconnect."""
         async with self._connect_lock:
             ble_device = self._get_ble_device()
@@ -206,7 +243,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                     pair=True,
                     max_attempts=3,
                 )
-                return await async_read_meter(client, _LOGGER)
+                return await async_read_meter(client, _LOGGER, sections)
             except (BleakError, PowerNIProtocolError, TimeoutError) as err:
                 if isinstance(err, BleakCharacteristicNotFoundError) and client is not None:
                     # The cached GATT table may be stale or incomplete; force

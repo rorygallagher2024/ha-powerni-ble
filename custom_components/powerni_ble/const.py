@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import datetime, timedelta
 import re
 
 DOMAIN = "powerni_ble"
@@ -43,6 +45,47 @@ RETRY_BACKOFF_MINUTES = (1, 2, 5)
 # Upper bound for one complete connect + read cycle, so a hung BLE operation
 # can never hold the connection lock and block later polls.
 POLL_TIMEOUT_SECONDS = 180
+
+
+# Groups of readings fetched in one poll. Balance/days-left is read on every
+# poll; slow-changing groups are only re-read when they are due, which keeps
+# most BLE sessions short.
+SECTION_BALANCE = "balance"
+SECTION_LIVE = "live"  # current kW load and £/hr
+SECTION_UNITS = "units"  # cumulative import kWh
+SECTION_SPEND = "spend"  # yesterday / last 7 days / last month
+ALL_SECTIONS = frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS, SECTION_SPEND})
+
+# Maximum age before a slow section is read again.
+SECTION_REFRESH_INTERVALS = {
+    SECTION_UNITS: timedelta(hours=1),
+    SECTION_SPEND: timedelta(hours=6),
+}
+
+
+def sections_due(
+    now: datetime,
+    last_read: Mapping[str, datetime],
+    force_full: bool = False,
+) -> frozenset[str]:
+    """Return the reading groups to fetch on this poll.
+
+    A slow section is due when it has never been read, its refresh interval
+    has elapsed, or (for daily spend figures) the local date has changed
+    since it was last read.
+    """
+    if force_full:
+        return ALL_SECTIONS
+    due = {SECTION_BALANCE, SECTION_LIVE}
+    for section, max_age in SECTION_REFRESH_INTERVALS.items():
+        last = last_read.get(section)
+        if (
+            last is None
+            or now - last >= max_age
+            or (section == SECTION_SPEND and now.date() != last.date())
+        ):
+            due.add(section)
+    return frozenset(due)
 
 
 def retry_interval_minutes(consecutive_failures: int, scan_interval: int) -> int:

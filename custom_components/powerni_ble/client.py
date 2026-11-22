@@ -10,6 +10,10 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from .const import (
+    ALL_SECTIONS,
+    SECTION_LIVE,
+    SECTION_SPEND,
+    SECTION_UNITS,
     CMD_DISPLAY_RESET,
     CMD_ENTER_TRANSPARENT,
     CMD_GET_BALANCE,
@@ -316,9 +320,15 @@ def _log_gatt_services(client: BleakClient, logger: logging.Logger) -> None:
 
 
 async def async_read_meter(
-    client: BleakClient, logger: logging.Logger = _LOGGER
+    client: BleakClient,
+    logger: logging.Logger = _LOGGER,
+    sections: frozenset[str] = ALL_SECTIONS,
 ) -> PowerNIMeterData:
-    """Run one transparent-mode telemetry poll against a connected Freedom Unit."""
+    """Run one transparent-mode telemetry poll against a connected Freedom Unit.
+
+    `sections` selects which groups of readings to fetch (balance is always
+    read). Fields for skipped sections are left as None.
+    """
     _log_gatt_services(client, logger)
 
     assembler = FrameAssembler()
@@ -441,87 +451,91 @@ async def async_read_meter(
                 )
 
         # 2. Live kW load and current £/hr rate
-        await _display_reset()
-        try:
-            await _send(CMD_TOTAL_CONSUMPTION)
-            _, match = await _wait_matching_line(line_queue, RE_LOAD_KW, LINE_TIMEOUT)
-            assert match is not None
-            data.current_load_kw = float(match.group(1))
-        except asyncio.TimeoutError as err:
-            logger.warning(
-                "Timed out reading current kW load (seen_lines=%r)",
-                getattr(err, "seen_lines", []),
-            )
-
-        try:
-            await _send(CMD_TOTAL_CONSUMPTION)
-            _, match = await _wait_matching_line(line_queue, RE_LOAD_COST, LINE_TIMEOUT)
-            assert match is not None
-            data.current_cost_per_hour = float(match.group(1))
-        except asyncio.TimeoutError as err:
-            logger.warning(
-                "Timed out reading current hourly cost (seen_lines=%r)",
-                getattr(err, "seen_lines", []),
-            )
-
-        # 3. Keepalive + cumulative import units (kWh)
-        await _send(CMD_KEEPALIVE)
-        if not await _wait_control_frame(
-            ctrl_queue, RSP_KEEPALIVE_ACK, KEEPALIVE_ACK_TIMEOUT
-        ):
-            logger.debug("Keepalive ACK timed out; continuing")
-
-        await _display_reset()
-        try:
-            await _send(CMD_TOTAL_UNITS)
-            _, match = await _wait_matching_line(line_queue, RE_IMP_UNITS, LINE_TIMEOUT)
-            assert match is not None
-            data.total_import_kwh = int(match.group(1))
-        except asyncio.TimeoutError as err:
-            logger.warning(
-                "Timed out reading total import kWh units (seen_lines=%r)",
-                getattr(err, "seen_lines", []),
-            )
-
-        # 4. Recent spend (yesterday / last 7 days / last month)
-        await _display_reset()
-        current_bucket: str | None = None
-        for _ in range(6):
-            if (
-                data.yesterday_cost is not None
-                and data.last_7_days_cost is not None
-                and data.last_month_cost is not None
-            ):
-                break
-            await _send(CMD_PREV_USAGE)
+        if SECTION_LIVE in sections:
+            await _display_reset()
             try:
-                line, _ = await _wait_matching_line(line_queue, None, LINE_TIMEOUT)
+                await _send(CMD_TOTAL_CONSUMPTION)
+                _, match = await _wait_matching_line(line_queue, RE_LOAD_KW, LINE_TIMEOUT)
+                assert match is not None
+                data.current_load_kw = float(match.group(1))
             except asyncio.TimeoutError as err:
                 logger.warning(
-                    "Timed out reading recent usage line (seen_lines=%r)",
+                    "Timed out reading current kW load (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
                 )
-                break
 
-            if RE_MONTH_USAGE.search(line):
-                break
+            try:
+                await _send(CMD_TOTAL_CONSUMPTION)
+                _, match = await _wait_matching_line(line_queue, RE_LOAD_COST, LINE_TIMEOUT)
+                assert match is not None
+                data.current_cost_per_hour = float(match.group(1))
+            except asyncio.TimeoutError as err:
+                logger.warning(
+                    "Timed out reading current hourly cost (seen_lines=%r)",
+                    getattr(err, "seen_lines", []),
+                )
 
-            prev_match = RE_PREV_LABEL.search(line)
-            if prev_match is not None:
-                current_bucket = prev_match.group(1).lower()
+        # 3. Keepalive, then cumulative import units (kWh)
+        if SECTION_UNITS in sections or SECTION_SPEND in sections:
+            await _send(CMD_KEEPALIVE)
+            if not await _wait_control_frame(
+                ctrl_queue, RSP_KEEPALIVE_ACK, KEEPALIVE_ACK_TIMEOUT
+            ):
+                logger.debug("Keepalive ACK timed out; continuing")
+        if SECTION_UNITS in sections:
 
-            amt_match = RE_USAGE_AMOUNT.search(line)
-            if amt_match is not None and current_bucket:
-                amount = float(amt_match.group(2))
-                if amt_match.group(1):
-                    amount = -amount
-                if current_bucket == "day":
-                    data.yesterday_cost = amount
-                elif current_bucket == "week":
-                    data.last_7_days_cost = amount
-                elif current_bucket == "mnth":
-                    data.last_month_cost = amount
-                current_bucket = None
+            await _display_reset()
+            try:
+                await _send(CMD_TOTAL_UNITS)
+                _, match = await _wait_matching_line(line_queue, RE_IMP_UNITS, LINE_TIMEOUT)
+                assert match is not None
+                data.total_import_kwh = int(match.group(1))
+            except asyncio.TimeoutError as err:
+                logger.warning(
+                    "Timed out reading total import kWh units (seen_lines=%r)",
+                    getattr(err, "seen_lines", []),
+                )
+
+        # 4. Recent spend (yesterday / last 7 days / last month)
+        if SECTION_SPEND in sections:
+            await _display_reset()
+            current_bucket: str | None = None
+            for _ in range(6):
+                if (
+                    data.yesterday_cost is not None
+                    and data.last_7_days_cost is not None
+                    and data.last_month_cost is not None
+                ):
+                    break
+                await _send(CMD_PREV_USAGE)
+                try:
+                    line, _ = await _wait_matching_line(line_queue, None, LINE_TIMEOUT)
+                except asyncio.TimeoutError as err:
+                    logger.warning(
+                        "Timed out reading recent usage line (seen_lines=%r)",
+                        getattr(err, "seen_lines", []),
+                    )
+                    break
+
+                if RE_MONTH_USAGE.search(line):
+                    break
+
+                prev_match = RE_PREV_LABEL.search(line)
+                if prev_match is not None:
+                    current_bucket = prev_match.group(1).lower()
+
+                amt_match = RE_USAGE_AMOUNT.search(line)
+                if amt_match is not None and current_bucket:
+                    amount = float(amt_match.group(2))
+                    if amt_match.group(1):
+                        amount = -amount
+                    if current_bucket == "day":
+                        data.yesterday_cost = amount
+                    elif current_bucket == "week":
+                        data.last_7_days_cost = amount
+                    elif current_bucket == "mnth":
+                        data.last_month_cost = amount
+                    current_bucket = None
 
         if not data.has_any_value():
             raise PowerNIProtocolError("No readings were received from the meter")

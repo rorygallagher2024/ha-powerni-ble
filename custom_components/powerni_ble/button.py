@@ -49,5 +49,5 @@ class PowerNIRefreshButton(
         return True
 
     async def async_press(self) -> None:
-        """Request an immediate coordinator refresh."""
-        await self.coordinator.async_request_refresh()
+        """Request an immediate refresh of every reading."""
+        await self.coordinator.async_request_full_refresh()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import types
@@ -43,9 +44,15 @@ from custom_components.powerni_ble.const import (  # noqa: E402
     RSP_DISCONNECT_ACK,
     RSP_KEEPALIVE_ACK,
     RSP_TRANSPARENT_ACK,
+    ALL_SECTIONS,
+    SECTION_BALANCE,
+    SECTION_LIVE,
+    SECTION_SPEND,
+    SECTION_UNITS,
     WRITE_UUID,
     clamp_scan_interval,
     retry_interval_minutes,
+    sections_due,
 )
 
 
@@ -159,8 +166,73 @@ class TestFrameAssembler(unittest.TestCase):
         self.assertEqual(lines, ["01 #14.25"])
 
 
+def full_script() -> dict[bytes, list[list[bytes]]]:
+    """Meter replies for a complete poll of every section."""
+    return {
+        CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+        CMD_GET_BALANCE: [
+            [encode_lcd("ACCOUNT"), encode_lcd("01 #14.25")],
+            [encode_lcd("ABOUT 12")],
+        ],
+        CMD_DISPLAY_RESET: [[encode_lcd("%%%%%%%%%")] for _ in range(4)],
+        CMD_TOTAL_CONSUMPTION: [
+            [encode_lcd("KW  LOAD"), encode_lcd("KW  0.452")],
+            [encode_lcd("LOAD COST"), encode_lcd(" #0.14/HR")],
+        ],
+        CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
+        CMD_TOTAL_UNITS: [[encode_lcd("12345 IMP UNITS")]],
+        CMD_PREV_USAGE: [
+            [encode_lcd("PREV DAY")],
+            [encode_lcd("   #3.20")],
+            [encode_lcd("PREV WEEK")],
+            [encode_lcd("  #21.45")],
+            [encode_lcd("PREV MNTH")],
+            [encode_lcd("  #89.10")],
+        ],
+        CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+    }
+
+
 class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
     """End-to-end protocol tests against FakeBleakClient."""
+
+    async def _read(self, sections=ALL_SECTIONS):
+        client = FakeBleakClient(full_script())
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            data = await async_read_meter(client, sections=sections)  # type: ignore[arg-type]
+        return client, data
+
+    async def test_balance_and_live_only_skips_slow_sections(self) -> None:
+        client, data = await self._read(frozenset({SECTION_BALANCE, SECTION_LIVE}))
+        sent = {w[1] for w in client.writes}
+        self.assertEqual(data.balance, 14.25)
+        self.assertEqual(data.current_load_kw, 0.452)
+        self.assertIsNone(data.total_import_kwh)
+        self.assertIsNone(data.yesterday_cost)
+        for cmd in (CMD_KEEPALIVE, CMD_TOTAL_UNITS, CMD_PREV_USAGE):
+            self.assertNotIn(cmd, sent)
+        self.assertEqual(client.writes[-1][1], CMD_LEAVE_TRANSPARENT)
+
+    async def test_balance_only(self) -> None:
+        client, data = await self._read(frozenset({SECTION_BALANCE}))
+        sent = {w[1] for w in client.writes}
+        self.assertEqual(data.balance, 14.25)
+        self.assertEqual(data.days_left, 12)
+        self.assertIsNone(data.current_load_kw)
+        self.assertNotIn(CMD_TOTAL_CONSUMPTION, sent)
+
+    async def test_spend_without_units_still_sends_keepalive(self) -> None:
+        client, data = await self._read(
+            frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_SPEND})
+        )
+        sent = {w[1] for w in client.writes}
+        self.assertIn(CMD_KEEPALIVE, sent)
+        self.assertNotIn(CMD_TOTAL_UNITS, sent)
+        self.assertIsNone(data.total_import_kwh)
+        self.assertEqual(data.last_month_cost, 89.10)
 
     async def test_full_meter_poll(self) -> None:
         script = {
@@ -459,3 +531,48 @@ class TestRetryInterval(unittest.TestCase):
     def test_never_slower_than_configured_interval(self) -> None:
         self.assertEqual(retry_interval_minutes(3, 2), 2)
         self.assertEqual(retry_interval_minutes(5, 1), 1)
+
+
+class TestSectionsDue(unittest.TestCase):
+    """Slow-changing readings are only fetched when due."""
+
+    NOW = datetime(2026, 11, 22, 18, 0, tzinfo=timezone.utc)
+
+    def test_first_poll_reads_everything(self) -> None:
+        self.assertEqual(sections_due(self.NOW, {}), ALL_SECTIONS)
+
+    def test_force_full(self) -> None:
+        last = {SECTION_UNITS: self.NOW, SECTION_SPEND: self.NOW}
+        self.assertEqual(sections_due(self.NOW, last, force_full=True), ALL_SECTIONS)
+
+    def test_recent_reads_skip_slow_sections(self) -> None:
+        last = {
+            SECTION_UNITS: self.NOW - timedelta(minutes=30),
+            SECTION_SPEND: self.NOW - timedelta(hours=2),
+        }
+        self.assertEqual(
+            sections_due(self.NOW, last), frozenset({SECTION_BALANCE, SECTION_LIVE})
+        )
+
+    def test_units_hourly_spend_six_hourly(self) -> None:
+        last = {
+            SECTION_UNITS: self.NOW - timedelta(minutes=61),
+            SECTION_SPEND: self.NOW - timedelta(hours=5),
+        }
+        self.assertEqual(
+            sections_due(self.NOW, last),
+            frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS}),
+        )
+        last[SECTION_SPEND] = self.NOW - timedelta(hours=6)
+        self.assertIn(SECTION_SPEND, sections_due(self.NOW, last))
+
+    def test_spend_due_after_midnight(self) -> None:
+        now = datetime(2026, 11, 23, 0, 5, tzinfo=timezone.utc)
+        last = {
+            SECTION_UNITS: now - timedelta(minutes=5),
+            SECTION_SPEND: now - timedelta(minutes=20),
+        }
+        self.assertEqual(
+            sections_due(now, last),
+            frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_SPEND}),
+        )
