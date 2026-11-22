@@ -31,6 +31,11 @@ from .const import (
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
+    POLL_STATUS_CONNECTING,
+    POLL_STATUS_ERROR,
+    POLL_STATUS_IDLE,
+    POLL_STATUS_READING,
+    POLL_STATUS_RETRYING,
     POLL_TIMEOUT_SECONDS,
     SECTION_SPEND,
     SECTION_UNITS,
@@ -95,6 +100,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         self._stale_notified: set[str] = set()
         self.last_successful_read: datetime | None = None
         self.last_top_up: TopUp | None = None
+        self.poll_status: str = POLL_STATUS_IDLE
+        self.last_error: str | None = None
         # Last freshly read balance, compared with the next to detect top-ups.
         self._top_up_baseline: float | None = None
         self._store: Store[dict[str, Any]] = Store(
@@ -116,8 +123,43 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         if clamped == self.scan_interval_minutes and self.update_interval == interval:
             return False
 
-        self.scan_interval_minutes = clamped
+        self.scan_interval_minutes = clamp_scan_interval(minutes)
         self.update_interval = interval
+
+    @property
+    def is_polling(self) -> bool:
+        """Return True while a BLE poll or in-poll retry is active."""
+        return self.poll_status in (
+            POLL_STATUS_CONNECTING,
+            POLL_STATUS_READING,
+            POLL_STATUS_RETRYING,
+        )
+
+    def _set_poll_status(self, status: str, *, error: str | None = None) -> None:
+        """Update live poll status and push to Home Assistant listeners."""
+        next_error = (
+            None
+            if status == POLL_STATUS_IDLE
+            else (error if error is not None else self.last_error)
+        )
+        if status == self.poll_status and next_error == self.last_error:
+            return
+        self.poll_status = status
+        self.last_error = next_error
+        if self._listeners:
+            self.async_update_listeners()
+
+    def _handle_partial_progress(self, partial: PowerNIMeterData) -> None:
+        """Publish readings section-by-section while a BLE poll is still running."""
+        if not self._listeners:
+            return
+        now = dt_util.now()
+        record_read_times(self.field_read_at, partial, now)
+        self._stale_notified.difference_update(fresh_fields(partial))
+        if partial.days_left_status is not None:
+            self._stale_notified.discard("days_left")
+        self.data, _ = merge_meter_data(partial, self.data)
+        self.async_update_listeners()
         now = dt_util.now()
         max_age = stale_after(clamped)
         self._stale_notified = {
@@ -326,11 +368,15 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 new_data = await self._async_poll(sections)
         except TimeoutError as err:
             self._record_result(False)
-            raise UpdateFailed(
-                f"Polling {self.address} timed out after {POLL_TIMEOUT_SECONDS}s"
-            ) from err
-        except UpdateFailed:
+            error_msg = f"Polling {self.address} timed out after {POLL_TIMEOUT_SECONDS}s"
+            self._set_poll_status(POLL_STATUS_ERROR, error=error_msg)
+            raise UpdateFailed(error_msg) from err
+        except UpdateFailed as err:
             self._record_result(False)
+            self._set_poll_status(POLL_STATUS_ERROR, error=str(err))
+            raise
+        except asyncio.CancelledError:
+            self.poll_status = POLL_STATUS_IDLE
             raise
         self._record_result(True)
         self._force_full_read = False
@@ -349,6 +395,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 self.address,
                 ", ".join(carried),
             )
+        self.poll_status = POLL_STATUS_IDLE
+        self.last_error = None
         return merged
 
     async def _async_poll(self, sections: frozenset[str]) -> PowerNIMeterData:
@@ -375,6 +423,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                     disconnected.set()
 
                 try:
+                    self._set_poll_status(POLL_STATUS_CONNECTING)
                     _LOGGER.debug(
                         "Connecting to Power NI meter %s (%s, details=%s, attempt=%d/%d)%s",
                         self.device_name,
@@ -394,8 +443,13 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                         pair=True,
                         max_attempts=3,
                     )
+                    self._set_poll_status(POLL_STATUS_READING)
                     return await async_read_meter(
-                        client, _LOGGER, sections, disconnected=disconnected
+                        client,
+                        _LOGGER,
+                        sections,
+                        disconnected=disconnected,
+                        on_progress=self._handle_partial_progress,
                     )
                 except (BleakError, PowerNIProtocolError, TimeoutError) as err:
                     last_err = err
@@ -437,6 +491,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                             )
 
                 if should_retry:
+                    self._set_poll_status(POLL_STATUS_RETRYING, error=str(last_err))
                     _LOGGER.info(
                         "Power NI meter %s (%s) read interrupted (%s); retrying in %.0fs (attempt %d/%d)",
                         self.device_name,
