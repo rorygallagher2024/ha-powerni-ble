@@ -704,5 +704,104 @@ class TestDisconnectDetection(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(client.notify_started)
 
 
+class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
+    """Tests for section-by-section progressive updates during a poll."""
+
+    async def test_full_poll_emits_progressive_snapshots(self) -> None:
+        script = {
+            CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+            CMD_GET_BALANCE: [
+                [encode_lcd("ACCOUNT"), encode_lcd("01 #14.25")],
+                [encode_lcd("ABOUT 12")],
+            ],
+            CMD_DISPLAY_RESET: [
+                [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
+            ],
+            CMD_TOTAL_CONSUMPTION: [
+                [encode_lcd("KW  0.452")],
+                [encode_lcd(" #0.14/HR")],
+            ],
+            CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
+            CMD_TOTAL_UNITS: [[encode_lcd("12345 IMP UNITS")]],
+            CMD_PREV_USAGE: [
+                [encode_lcd("PREV DAY")],
+                [encode_lcd("   #3.20")],
+                [encode_lcd("PREV WEEK")],
+                [encode_lcd("  #21.45")],
+                [encode_lcd("PREV MNTH")],
+                [encode_lcd("  #89.10")],
+            ],
+            CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+        }
+        client = FakeBleakClient(script)
+        snapshots: list[PowerNIMeterData] = []
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            final = await async_read_meter(
+                client,  # type: ignore[arg-type]
+                on_progress=snapshots.append,
+            )
+
+        self.assertEqual(len(snapshots), 3)
+        # Snapshot 1: only balance/days left read so far
+        self.assertEqual(snapshots[0].balance, 14.25)
+        self.assertEqual(snapshots[0].days_left, 12)
+        self.assertIsNone(snapshots[0].current_load_kw)
+        self.assertIsNone(snapshots[0].total_import_kwh)
+        # Snapshot 2: live load/cost added, units not yet read
+        self.assertEqual(snapshots[1].balance, 14.25)
+        self.assertEqual(snapshots[1].current_load_kw, 0.452)
+        self.assertEqual(snapshots[1].current_cost_per_hour, 0.14)
+        self.assertIsNone(snapshots[1].total_import_kwh)
+        # Snapshot 3: cumulative import kWh added, spend returned on final result
+        self.assertEqual(snapshots[2].total_import_kwh, 12345)
+        self.assertIsNone(snapshots[2].yesterday_cost)
+        self.assertEqual(final.yesterday_cost, 3.20)
+        self.assertEqual(final.last_month_cost, 89.10)
+
+    async def test_fast_poll_emits_two_snapshots_and_none_callback_ok(self) -> None:
+        script = {
+            CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+            CMD_GET_BALANCE: [
+                [encode_lcd("ACCOUNT"), encode_lcd("01 #14.25")],
+                [encode_lcd("ABOUT 12")],
+            ],
+            CMD_DISPLAY_RESET: [
+                [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
+            ],
+            CMD_TOTAL_CONSUMPTION: [
+                [encode_lcd("KW  0.452")],
+                [encode_lcd(" #0.14/HR")],
+            ],
+            CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+        }
+        sections = frozenset({SECTION_BALANCE, SECTION_LIVE})
+        snapshots: list[PowerNIMeterData] = []
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            await async_read_meter(
+                FakeBleakClient(script),  # type: ignore[arg-type]
+                sections=sections,
+                on_progress=snapshots.append,
+            )
+            await async_read_meter(
+                FakeBleakClient(script),  # type: ignore[arg-type]
+                sections=sections,
+                on_progress=None,
+            )
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(snapshots[0].balance, 14.25)
+        self.assertIsNone(snapshots[0].current_load_kw)
+        self.assertEqual(snapshots[1].current_load_kw, 0.452)
+
+
 if __name__ == "__main__":
     unittest.main()

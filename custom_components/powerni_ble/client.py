@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import dataclasses
 from dataclasses import dataclass
 import logging
@@ -388,11 +389,13 @@ async def async_read_meter(
     logger: logging.Logger = _LOGGER,
     sections: frozenset[str] = ALL_SECTIONS,
     disconnected: asyncio.Event | None = None,
+    on_progress: Callable[[PowerNIMeterData], None] | None = None,
 ) -> PowerNIMeterData:
     """Run one transparent-mode telemetry poll against a connected Freedom Unit.
 
     `sections` selects which groups of readings to fetch (balance is always
-    read). Fields for skipped sections are left as None.
+    read). Fields for skipped sections are left as None. When `on_progress` is
+    provided, intermediate snapshots are emitted as each section completes.
     """
     _log_gatt_services(client, logger)
 
@@ -441,6 +444,10 @@ async def async_read_meter(
     notify_started = True
 
     data = PowerNIMeterData()
+
+    def _emit_progress() -> None:
+        if on_progress is not None and data.has_any_value():
+            on_progress(dataclasses.replace(data))
 
     try:
         logger.debug("Sending ENTER_TRANSPARENT_MODE")
@@ -527,6 +534,8 @@ async def async_read_meter(
                 data.days_left = (
                     int(dl_match.group(2)) if dl_match.group(2) is not None else None
                 )
+        if data.balance is not None or data.days_left_status is not None:
+            _emit_progress()
 
         # 2. Live kW load and current £/hr rate
         if SECTION_LIVE in sections:
@@ -556,6 +565,11 @@ async def async_read_meter(
                     "Timed out reading current hourly cost (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
                 )
+            if (
+                data.current_load_kw is not None
+                or data.current_cost_per_hour is not None
+            ):
+                _emit_progress()
 
         # 3. Keepalive, then cumulative import units (kWh)
         if SECTION_UNITS in sections or SECTION_SPEND in sections:
@@ -579,6 +593,8 @@ async def async_read_meter(
                     "Timed out reading total import kWh units (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
                 )
+            if data.total_import_kwh is not None:
+                _emit_progress()
 
         # 4. Recent spend (yesterday / last 7 days / last month)
         if SECTION_SPEND in sections:

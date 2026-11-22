@@ -40,5 +40,19 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "poll_status": {
+        "name": "Poll status",
+        "state": {
+          "idle": "Idle",
+          "connecting": "Connecting",
+          "reading": "Reading",
+          "retrying": "Retrying",
+          "error": "Error"
+        }
+      }
+    }
   }
 }

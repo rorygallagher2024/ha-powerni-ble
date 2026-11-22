@@ -22,8 +22,24 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import PowerNIConfigEntry
 from .client import PowerNIMeterData
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    POLL_STATUS_CONNECTING,
+    POLL_STATUS_ERROR,
+    POLL_STATUS_IDLE,
+    POLL_STATUS_OPTIONS,
+    POLL_STATUS_READING,
+    POLL_STATUS_RETRYING,
+)
 from .coordinator import PowerNIDataUpdateCoordinator
+
+POLL_STATUS_ICONS: dict[str, str] = {
+    POLL_STATUS_IDLE: "mdi:check-circle-outline",
+    POLL_STATUS_CONNECTING: "mdi:bluetooth-connect",
+    POLL_STATUS_READING: "mdi:sync",
+    POLL_STATUS_RETRYING: "mdi:refresh-auto",
+    POLL_STATUS_ERROR: "mdi:alert-circle-outline",
+}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -200,9 +216,22 @@ class PowerNIStatusSensorEntityDescription(SensorEntityDescription):
 
     value_fn: Callable[[PowerNIDataUpdateCoordinator], StateType | datetime]
     attrs_fn: Callable[[PowerNIDataUpdateCoordinator], dict[str, Any] | None] | None = None
+    icon_fn: Callable[[PowerNIDataUpdateCoordinator], str] | None = None
 
 
 STATUS_SENSORS: tuple[PowerNIStatusSensorEntityDescription, ...] = (
+    PowerNIStatusSensorEntityDescription(
+        key="poll_status",
+        translation_key="poll_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=list(POLL_STATUS_OPTIONS),
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.poll_status,
+        attrs_fn=lambda c: {"last_error": c.last_error} if c.last_error else None,
+        icon_fn=lambda c: POLL_STATUS_ICONS.get(
+            c.poll_status, "mdi:bluetooth-transfer"
+        ),
+    ),
     PowerNIStatusSensorEntityDescription(
         key="last_successful_read",
         name="Last successful read",
@@ -260,6 +289,13 @@ class PowerNIStatusSensor(
     def available(self) -> bool:
         """Stay available after failed polls; these describe past events."""
         return True
+
+    @property
+    def icon(self) -> str | None:
+        """Return dynamic icon when configured on the description."""
+        if self.entity_description.icon_fn is not None:
+            return self.entity_description.icon_fn(self.coordinator)
+        return super().icon
 
     @property
     def native_value(self) -> StateType | datetime:

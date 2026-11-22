@@ -12,7 +12,12 @@ from .coordinator import STORE_VERSION, PowerNIDataUpdateCoordinator
 
 PowerNIConfigEntry = ConfigEntry[PowerNIDataUpdateCoordinator]
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON, Platform.NUMBER]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.SENSOR,
+    Platform.BUTTON,
+    Platform.NUMBER,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> bool:

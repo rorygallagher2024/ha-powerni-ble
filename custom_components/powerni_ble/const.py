@@ -51,6 +51,20 @@ POLL_TIMEOUT_SECONDS = 180
 SESSION_RETRY_ATTEMPTS = 2
 SESSION_RETRY_DELAY_SECONDS = 3.0
 
+# Live poll lifecycle states (exposed via the Poll status enum sensor)
+POLL_STATUS_IDLE = "idle"
+POLL_STATUS_CONNECTING = "connecting"
+POLL_STATUS_READING = "reading"
+POLL_STATUS_RETRYING = "retrying"
+POLL_STATUS_ERROR = "error"
+POLL_STATUS_OPTIONS: tuple[str, ...] = (
+    POLL_STATUS_IDLE,
+    POLL_STATUS_CONNECTING,
+    POLL_STATUS_READING,
+    POLL_STATUS_RETRYING,
+    POLL_STATUS_ERROR,
+)
+
 
 # Groups of readings fetched in one poll. Balance/days-left is read on every
 # poll; slow-changing groups are only re-read when they are due, which keeps
