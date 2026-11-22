@@ -7,7 +7,9 @@ import dataclasses
 from dataclasses import dataclass
 import logging
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
+
+_T = TypeVar("_T")
 
 from .const import (
     ALL_SECTIONS,
@@ -66,6 +68,10 @@ DISCONNECT_ACK_TIMEOUT = 0.3
 
 class PowerNIProtocolError(Exception):
     """Raised when the meter fails to respond with expected protocol frames."""
+
+
+class PowerNIDisconnectedError(PowerNIProtocolError):
+    """Raised when the BLE connection drops mid-poll."""
 
 
 class _LineTimeoutError(asyncio.TimeoutError):
@@ -198,8 +204,65 @@ class FrameAssembler:
         return controls, lines
 
 
+def _is_disconnected(
+    client: BleakClient, disconnected: asyncio.Event | None
+) -> bool:
+    """Return True if the disconnect event fired or the client reports disconnected."""
+    return (disconnected is not None and disconnected.is_set()) or not getattr(
+        client, "is_connected", True
+    )
+
+
+def _check_connected(
+    client: BleakClient, disconnected: asyncio.Event | None
+) -> None:
+    """Raise PowerNIDisconnectedError if the BLE link dropped."""
+    if _is_disconnected(client, disconnected):
+        raise PowerNIDisconnectedError("BLE connection dropped during meter read")
+
+
+async def _wait_queue_or_disconnect(
+    queue: asyncio.Queue[_T],
+    timeout: float,
+    disconnected: asyncio.Event | None,
+) -> _T:
+    """Wait for the next item from `queue`, aborting immediately on disconnect."""
+    if disconnected is None:
+        return await asyncio.wait_for(queue.get(), timeout=timeout)
+    if disconnected.is_set():
+        raise PowerNIDisconnectedError("BLE connection dropped during meter read")
+
+    get_task: asyncio.Task[_T] = asyncio.create_task(queue.get())
+    disc_task: asyncio.Task[bool] = asyncio.create_task(disconnected.wait())
+    try:
+        done, pending = await asyncio.wait(
+            (get_task, disc_task),
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if get_task in done:
+            return get_task.result()
+        if disc_task in done:
+            raise PowerNIDisconnectedError("BLE connection dropped during meter read")
+        raise asyncio.TimeoutError
+    except BaseException:
+        for task in (get_task, disc_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(get_task, disc_task, return_exceptions=True)
+        raise
+
+
 async def _wait_control_frame(
-    ctrl_queue: asyncio.Queue[bytes], expected: bytes, timeout: float
+    ctrl_queue: asyncio.Queue[bytes],
+    expected: bytes,
+    timeout: float,
+    disconnected: asyncio.Event | None = None,
 ) -> bool:
     """Wait until `expected` 4-byte control frame arrives or timeout expires."""
     deadline = asyncio.get_running_loop().time() + timeout
@@ -208,7 +271,7 @@ async def _wait_control_frame(
         if remaining <= 0:
             return False
         try:
-            frame = await asyncio.wait_for(ctrl_queue.get(), timeout=remaining)
+            frame = await _wait_queue_or_disconnect(ctrl_queue, remaining, disconnected)
         except asyncio.TimeoutError:
             return False
         if frame == expected:
@@ -221,6 +284,7 @@ async def _wait_matching_line(
     timeout: float,
     *,
     ignore_reset: bool = True,
+    disconnected: asyncio.Event | None = None,
 ) -> tuple[str, re.Match[str] | None]:
     """Wait for a non-ignored LCD line matching `pattern` (or any line if None)."""
     deadline = asyncio.get_running_loop().time() + timeout
@@ -232,7 +296,7 @@ async def _wait_matching_line(
         if remaining <= 0:
             raise _LineTimeoutError(seen_lines)
         try:
-            line = await asyncio.wait_for(line_queue.get(), timeout=remaining)
+            line = await _wait_queue_or_disconnect(line_queue, remaining, disconnected)
         except asyncio.TimeoutError as err:
             raise _LineTimeoutError(seen_lines) from err
 
@@ -323,6 +387,7 @@ async def async_read_meter(
     client: BleakClient,
     logger: logging.Logger = _LOGGER,
     sections: frozenset[str] = ALL_SECTIONS,
+    disconnected: asyncio.Event | None = None,
 ) -> PowerNIMeterData:
     """Run one transparent-mode telemetry poll against a connected Freedom Unit.
 
@@ -353,6 +418,7 @@ async def async_read_meter(
 
     async def _send(cmd: bytes) -> None:
         await asyncio.sleep(COMMAND_PACING_DELAY)
+        _check_connected(client, disconnected)
         logger.debug("BLE write %s (response=%s)", cmd.hex(" "), write_with_response)
         await client.write_gatt_char(WRITE_UUID, cmd, response=write_with_response)
 
@@ -360,12 +426,17 @@ async def async_read_meter(
         await _send(CMD_DISPLAY_RESET)
         try:
             await _wait_matching_line(
-                line_queue, RE_RESET_ACK, RESET_ACK_TIMEOUT, ignore_reset=False
+                line_queue,
+                RE_RESET_ACK,
+                RESET_ACK_TIMEOUT,
+                ignore_reset=False,
+                disconnected=disconnected,
             )
         except asyncio.TimeoutError:
             logger.debug("Display reset ACK timed out; continuing")
 
     logger.info("Starting Power NI BLE poll")
+    _check_connected(client, disconnected)
     await client.start_notify(NOTIFY_UUID, _on_notify)
     notify_started = True
 
@@ -373,9 +444,10 @@ async def async_read_meter(
 
     try:
         logger.debug("Sending ENTER_TRANSPARENT_MODE")
+        _check_connected(client, disconnected)
         await client.write_gatt_char(WRITE_UUID, CMD_ENTER_TRANSPARENT, response=False)
         got_ack = await _wait_control_frame(
-            ctrl_queue, RSP_TRANSPARENT_ACK, TRANSPARENT_ACK_TIMEOUT
+            ctrl_queue, RSP_TRANSPARENT_ACK, TRANSPARENT_ACK_TIMEOUT, disconnected
         )
         if not got_ack:
             summary, write_char, notify_char = _summarize_services(client)
@@ -390,6 +462,7 @@ async def async_read_meter(
                 write_char, "properties", ()
             ):
                 try:
+                    _check_connected(client, disconnected)
                     await client.write_gatt_char(
                         WRITE_UUID, CMD_ENTER_TRANSPARENT, response=True
                     )
@@ -397,7 +470,7 @@ async def async_read_meter(
                         "Write-with-response succeeded for ENTER_TRANSPARENT_MODE; waiting 2.5s for 55 cc 01 33"
                     )
                     got_ack = await _wait_control_frame(
-                        ctrl_queue, RSP_TRANSPARENT_ACK, 2.5
+                        ctrl_queue, RSP_TRANSPARENT_ACK, 2.5, disconnected
                     )
                     if got_ack:
                         write_with_response = True
@@ -407,6 +480,8 @@ async def async_read_meter(
                             len(raw_notifies),
                             raw_notifies,
                         )
+                except PowerNIDisconnectedError:
+                    raise
                 except Exception as err:
                     logger.warning(
                         "Write-with-response error: %s: %s", type(err).__name__, err
@@ -431,7 +506,10 @@ async def async_read_meter(
             await _send(CMD_GET_BALANCE)
             try:
                 matched_line, _ = await _wait_matching_line(
-                    line_queue, RE_BALANCE_OR_DAYS_LEFT, LINE_TIMEOUT
+                    line_queue,
+                    RE_BALANCE_OR_DAYS_LEFT,
+                    LINE_TIMEOUT,
+                    disconnected=disconnected,
                 )
             except asyncio.TimeoutError as err:
                 logger.warning(
@@ -455,7 +533,9 @@ async def async_read_meter(
             await _display_reset()
             try:
                 await _send(CMD_TOTAL_CONSUMPTION)
-                _, match = await _wait_matching_line(line_queue, RE_LOAD_KW, LINE_TIMEOUT)
+                _, match = await _wait_matching_line(
+                    line_queue, RE_LOAD_KW, LINE_TIMEOUT, disconnected=disconnected
+                )
                 assert match is not None
                 data.current_load_kw = float(match.group(1))
             except asyncio.TimeoutError as err:
@@ -466,7 +546,9 @@ async def async_read_meter(
 
             try:
                 await _send(CMD_TOTAL_CONSUMPTION)
-                _, match = await _wait_matching_line(line_queue, RE_LOAD_COST, LINE_TIMEOUT)
+                _, match = await _wait_matching_line(
+                    line_queue, RE_LOAD_COST, LINE_TIMEOUT, disconnected=disconnected
+                )
                 assert match is not None
                 data.current_cost_per_hour = float(match.group(1))
             except asyncio.TimeoutError as err:
@@ -479,7 +561,7 @@ async def async_read_meter(
         if SECTION_UNITS in sections or SECTION_SPEND in sections:
             await _send(CMD_KEEPALIVE)
             if not await _wait_control_frame(
-                ctrl_queue, RSP_KEEPALIVE_ACK, KEEPALIVE_ACK_TIMEOUT
+                ctrl_queue, RSP_KEEPALIVE_ACK, KEEPALIVE_ACK_TIMEOUT, disconnected
             ):
                 logger.debug("Keepalive ACK timed out; continuing")
         if SECTION_UNITS in sections:
@@ -487,7 +569,9 @@ async def async_read_meter(
             await _display_reset()
             try:
                 await _send(CMD_TOTAL_UNITS)
-                _, match = await _wait_matching_line(line_queue, RE_IMP_UNITS, LINE_TIMEOUT)
+                _, match = await _wait_matching_line(
+                    line_queue, RE_IMP_UNITS, LINE_TIMEOUT, disconnected=disconnected
+                )
                 assert match is not None
                 data.total_import_kwh = int(match.group(1))
             except asyncio.TimeoutError as err:
@@ -509,7 +593,9 @@ async def async_read_meter(
                     break
                 await _send(CMD_PREV_USAGE)
                 try:
-                    line, _ = await _wait_matching_line(line_queue, None, LINE_TIMEOUT)
+                    line, _ = await _wait_matching_line(
+                        line_queue, None, LINE_TIMEOUT, disconnected=disconnected
+                    )
                 except asyncio.TimeoutError as err:
                     logger.warning(
                         "Timed out reading recent usage line (seen_lines=%r)",
@@ -555,15 +641,18 @@ async def async_read_meter(
         )
         return data
     finally:
-        try:
-            await client.write_gatt_char(WRITE_UUID, CMD_LEAVE_TRANSPARENT, response=False)
-            await _wait_control_frame(
-                ctrl_queue, RSP_DISCONNECT_ACK, DISCONNECT_ACK_TIMEOUT
-            )
-        except Exception as err:
-            logger.debug("Ignoring error leaving transparent mode: %s", err)
-        if notify_started:
+        if not _is_disconnected(client, disconnected):
             try:
-                await client.stop_notify(NOTIFY_UUID)
+                await client.write_gatt_char(
+                    WRITE_UUID, CMD_LEAVE_TRANSPARENT, response=False
+                )
+                await _wait_control_frame(
+                    ctrl_queue, RSP_DISCONNECT_ACK, DISCONNECT_ACK_TIMEOUT
+                )
             except Exception as err:
-                logger.debug("Ignoring error stopping notifications: %s", err)
+                logger.debug("Ignoring error leaving transparent mode: %s", err)
+            if notify_started:
+                try:
+                    await client.stop_notify(NOTIFY_UUID)
+                except Exception as err:
+                    logger.debug("Ignoring error stopping notifications: %s", err)

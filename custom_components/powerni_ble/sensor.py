@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -12,7 +13,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfTime
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -39,7 +40,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
         name="Balance",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
-        state_class=None,
+        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=2,
         icon="mdi:cash",
         value_fn=lambda data: data.balance,
@@ -90,7 +91,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
         name="Yesterday's spend",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
-        state_class=None,
+        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=2,
         icon="mdi:cash-clock",
         value_fn=lambda data: data.yesterday_cost,
@@ -100,7 +101,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
         name="Last 7 days spend",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
-        state_class=None,
+        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=2,
         icon="mdi:cash-clock",
         value_fn=lambda data: data.last_7_days_cost,
@@ -110,7 +111,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
         name="Last month spend",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
-        state_class=None,
+        state_class=SensorStateClass.TOTAL,
         suggested_display_precision=2,
         icon="mdi:cash-clock",
         value_fn=lambda data: data.last_month_cost,
@@ -125,15 +126,34 @@ async def async_setup_entry(
 ) -> None:
     """Set up Power NI BLE sensors from a config entry."""
     coordinator = entry.runtime_data
-    async_add_entities(
+    entities: list[SensorEntity] = [
         PowerNISensorEntity(coordinator, description) for description in SENSORS
+    ]
+    entities.extend(
+        PowerNIStatusSensor(coordinator, description) for description in STATUS_SENSORS
+    )
+    async_add_entities(entities)
+
+
+def _device_info(coordinator: PowerNIDataUpdateCoordinator) -> DeviceInfo:
+    return DeviceInfo(
+        connections={(CONNECTION_BLUETOOTH, coordinator.address)},
+        identifiers={(DOMAIN, coordinator.address)},
+        name=coordinator.device_name,
+        manufacturer="Power NI",
+        model="Keypad+ Freedom Unit",
     )
 
 
 class PowerNISensorEntity(
     CoordinatorEntity[PowerNIDataUpdateCoordinator], SensorEntity
 ):
-    """Sensor representing a Power NI Freedom Unit reading."""
+    """Sensor representing a Power NI Freedom Unit reading.
+
+    Availability follows the age of the reading rather than the last poll:
+    a value kept from an earlier poll stays available (with its read time in
+    the last_read attribute) until it is older than the staleness limit.
+    """
 
     entity_description: PowerNISensorEntityDescription
     _attr_has_entity_name = True
@@ -146,12 +166,13 @@ class PowerNISensorEntity(
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{coordinator.address}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            connections={(CONNECTION_BLUETOOTH, coordinator.address)},
-            identifiers={(DOMAIN, coordinator.address)},
-            name=coordinator.device_name,
-            manufacturer="Power NI",
-            model="Keypad+ Freedom Unit",
+        self._attr_device_info = _device_info(coordinator)
+
+    @property
+    def available(self) -> bool:
+        """Return True while the reading is recent enough to trust."""
+        return self.coordinator.data is not None and not self.coordinator.is_field_stale(
+            self.entity_description.key
         )
 
     @property
@@ -163,7 +184,91 @@ class PowerNISensorEntity(
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return when the value was read, plus any description attributes."""
+        attrs: dict[str, Any] = {}
+        last_read = self.coordinator.field_read_at.get(self.entity_description.key)
+        if last_read is not None:
+            attrs["last_read"] = last_read.isoformat()
+        if self.coordinator.data is not None and self.entity_description.attrs_fn:
+            attrs.update(self.entity_description.attrs_fn(self.coordinator.data) or {})
+        return attrs or None
+
+
+@dataclass(frozen=True, kw_only=True)
+class PowerNIStatusSensorEntityDescription(SensorEntityDescription):
+    """Describes a sensor derived from coordinator state rather than a reading."""
+
+    value_fn: Callable[[PowerNIDataUpdateCoordinator], StateType | datetime]
+    attrs_fn: Callable[[PowerNIDataUpdateCoordinator], dict[str, Any] | None] | None = None
+
+
+STATUS_SENSORS: tuple[PowerNIStatusSensorEntityDescription, ...] = (
+    PowerNIStatusSensorEntityDescription(
+        key="last_successful_read",
+        name="Last successful read",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:clock-check-outline",
+        value_fn=lambda c: c.last_successful_read,
+    ),
+    PowerNIStatusSensorEntityDescription(
+        key="last_top_up",
+        name="Last top-up",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="GBP",
+        suggested_display_precision=2,
+        icon="mdi:cash-plus",
+        value_fn=lambda c: c.last_top_up.amount if c.last_top_up else None,
+        attrs_fn=lambda c: (
+            {
+                "balance_before": c.last_top_up.balance_before,
+                "balance_after": c.last_top_up.balance_after,
+            }
+            if c.last_top_up
+            else None
+        ),
+    ),
+    PowerNIStatusSensorEntityDescription(
+        key="last_top_up_time",
+        name="Last top-up time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:cash-clock",
+        value_fn=lambda c: c.last_top_up.at if c.last_top_up else None,
+    ),
+)
+
+
+class PowerNIStatusSensor(
+    CoordinatorEntity[PowerNIDataUpdateCoordinator], SensorEntity
+):
+    """Sensor reporting integration state such as the last read or top-up."""
+
+    entity_description: PowerNIStatusSensorEntityDescription
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: PowerNIDataUpdateCoordinator,
+        description: PowerNIStatusSensorEntityDescription,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.address}_{description.key}"
+        self._attr_device_info = _device_info(coordinator)
+
+    @property
+    def available(self) -> bool:
+        """Stay available after failed polls; these describe past events."""
+        return True
+
+    @property
+    def native_value(self) -> StateType | datetime:
+        """Return the value from coordinator state."""
+        return self.entity_description.value_fn(self.coordinator)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return optional extra state attributes."""
-        if self.coordinator.data is None or self.entity_description.attrs_fn is None:
+        if self.entity_description.attrs_fn is None:
             return None
-        return self.entity_description.attrs_fn(self.coordinator.data)
+        return self.entity_description.attrs_fn(self.coordinator)

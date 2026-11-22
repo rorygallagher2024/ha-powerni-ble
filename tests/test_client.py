@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -23,10 +25,17 @@ sys.modules.setdefault("custom_components.powerni_ble", _pkg)
 from custom_components.powerni_ble import client as client_mod  # noqa: E402
 from custom_components.powerni_ble.client import (  # noqa: E402
     FrameAssembler,
+    PowerNIDisconnectedError,
     PowerNIMeterData,
     PowerNIProtocolError,
     async_read_meter,
     merge_meter_data,
+)
+from custom_components.powerni_ble.tracking import (  # noqa: E402
+    detect_top_up,
+    is_stale,
+    record_read_times,
+    stale_after,
 )
 from custom_components.powerni_ble.const import (  # noqa: E402
     CMD_DISPLAY_RESET,
@@ -482,8 +491,48 @@ class TestClampScanInterval(unittest.TestCase):
         self.assertEqual(clamp_scan_interval("not-a-number"), DEFAULT_SCAN_INTERVAL_MINUTES)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestTracking(unittest.TestCase):
+    """Tests for reading freshness and top-up detection."""
+
+    NOW = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
+
+    def test_stale_after_never_below_24h_or_three_polls(self) -> None:
+        self.assertEqual(stale_after(15), timedelta(hours=24))
+        self.assertEqual(stale_after(1440), timedelta(hours=72))
+
+    def test_is_stale(self) -> None:
+        limit = timedelta(hours=24)
+        self.assertTrue(is_stale(None, self.NOW, limit))
+        self.assertFalse(is_stale(self.NOW - timedelta(hours=23), self.NOW, limit))
+        self.assertTrue(is_stale(self.NOW - timedelta(hours=25), self.NOW, limit))
+
+    def test_record_read_times_only_stamps_fresh_fields(self) -> None:
+        earlier = self.NOW - timedelta(hours=6)
+        read_times = {"last_month_cost": earlier}
+        record_read_times(
+            read_times,
+            PowerNIMeterData(balance=12.5, current_load_kw=0.4),
+            self.NOW,
+        )
+        self.assertEqual(read_times["balance"], self.NOW)
+        self.assertEqual(read_times["current_load_kw"], self.NOW)
+        self.assertEqual(read_times["last_month_cost"], earlier)
+        self.assertNotIn("total_import_kwh", read_times)
+
+    def test_record_read_times_counts_no_data_as_fresh(self) -> None:
+        read_times: dict[str, datetime] = {}
+        record_read_times(
+            read_times, PowerNIMeterData(days_left_status="NO DATA"), self.NOW
+        )
+        self.assertEqual(read_times["days_left"], self.NOW)
+
+    def test_detect_top_up(self) -> None:
+        self.assertEqual(detect_top_up(148.36, 168.30), 19.94)
+        self.assertEqual(detect_top_up(-5.20, 14.80), 20.0)
+        self.assertIsNone(detect_top_up(148.41, 148.36))
+        self.assertIsNone(detect_top_up(148.36, 148.90))
+        self.assertIsNone(detect_top_up(None, 150.0))
+        self.assertIsNone(detect_top_up(150.0, None))
 
 
 class TestMergeMeterData(unittest.TestCase):
@@ -576,3 +625,84 @@ class TestSectionsDue(unittest.TestCase):
             sections_due(now, last),
             frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_SPEND}),
         )
+
+
+class TestDisconnectDetection(unittest.IsolatedAsyncioTestCase):
+    """Tests that mid-poll BLE disconnects abort immediately instead of timing out."""
+
+    async def test_disconnect_during_transparent_ack_aborts_immediately(self) -> None:
+        disconnected = asyncio.Event()
+
+        class DropOnTransparentClient(FakeBleakClient):
+            is_connected = True
+
+            async def write_gatt_char(
+                self, uuid: str, data: bytes, response: bool = False
+            ) -> None:
+                await super().write_gatt_char(uuid, data, response)
+                if data == CMD_ENTER_TRANSPARENT:
+                    self.is_connected = False
+                    disconnected.set()
+
+        client = DropOnTransparentClient({})
+        started = time.monotonic()
+        with self.assertRaises(PowerNIDisconnectedError):
+            await async_read_meter(
+                client,  # type: ignore[arg-type]
+                disconnected=disconnected,
+            )
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual([w[1] for w in client.writes], [CMD_ENTER_TRANSPARENT])
+        self.assertFalse(client.notify_stopped)
+
+    async def test_disconnect_during_balance_aborts_without_more_commands(self) -> None:
+        disconnected = asyncio.Event()
+
+        class DropOnBalanceClient(FakeBleakClient):
+            is_connected = True
+
+            async def write_gatt_char(
+                self, uuid: str, data: bytes, response: bool = False
+            ) -> None:
+                await super().write_gatt_char(uuid, data, response)
+                if data == CMD_GET_BALANCE:
+                    self.is_connected = False
+                    disconnected.set()
+
+        client = DropOnBalanceClient(
+            {
+                CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+                CMD_DISPLAY_RESET: [[encode_lcd("%%%%%%%%%")]],
+            }
+        )
+        started = time.monotonic()
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            self.assertRaises(PowerNIDisconnectedError),
+        ):
+            await async_read_meter(
+                client,  # type: ignore[arg-type]
+                disconnected=disconnected,
+            )
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(
+            [w[1] for w in client.writes],
+            [CMD_ENTER_TRANSPARENT, CMD_DISPLAY_RESET, CMD_GET_BALANCE],
+        )
+        self.assertFalse(client.notify_stopped)
+
+    async def test_already_disconnected_client_fails_before_writes(self) -> None:
+        class DeadClient(FakeBleakClient):
+            is_connected = False
+
+        client = DeadClient({})
+        with self.assertRaises(PowerNIDisconnectedError):
+            await async_read_meter(client)  # type: ignore[arg-type]
+        self.assertEqual(client.writes, [])
+        self.assertFalse(client.notify_started)
+
+
+if __name__ == "__main__":
+    unittest.main()
