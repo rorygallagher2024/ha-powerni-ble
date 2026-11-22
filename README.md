@@ -182,4 +182,3 @@ Planned enhancements for future releases:
 - **14-day half-hourly survey backfill (`0xA0`):** Import the meter's 14 days of stored 30-minute `kWh` history into Home Assistant Long-Term Statistics for instant historical Energy Dashboard graphs.
 - **12-month historical spend (`JAN`–`DEC`) & meter serial (`0x80`):** Parse the remaining monthly spend frames from `0xC2 0x32` and the binary meter serial / diagnostics frames from `0x80`.
 - **Notification Blueprint:** Pre-built Blueprint for low-credit (`Balance` < threshold) and low-days-remaining alerts.
-- **Official listings:** Submit to the **HACS Default Repository** list and `home-assistant/brands`.
