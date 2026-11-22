@@ -35,7 +35,7 @@ class PowerNIRefreshButton(
     """Button triggering an immediate meter read."""
 
     _attr_has_entity_name = True
-    _attr_name = "Refresh"
+    _attr_translation_key = "refresh"
     _attr_icon = "mdi:refresh"
 
     def __init__(self, coordinator: PowerNIDataUpdateCoordinator) -> None:
@@ -65,7 +65,7 @@ class PowerNISyncHistoryButton(
     """Button triggering a full 14-day 30-minute energy survey sync (0xA0)."""
 
     _attr_has_entity_name = True
-    _attr_name = "Sync energy history"
+    _attr_translation_key = "sync_energy_history"
     _attr_icon = "mdi:chart-timeline-variant-shimmer"
     _attr_entity_category = EntityCategory.CONFIG
 

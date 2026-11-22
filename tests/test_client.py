@@ -3,24 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import sys
 import time
 import types
 import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PKG_ROOT = ROOT / "custom_components" / "powerni_ble"
 
-# Load client/const without executing __init__.py (which requires Home Assistant).
-_cc = types.ModuleType("custom_components")
-_cc.__path__ = [str(ROOT / "custom_components")]
-_pkg = types.ModuleType("custom_components.powerni_ble")
-_pkg.__path__ = [str(PKG_ROOT)]
-sys.modules.setdefault("custom_components", _cc)
-sys.modules.setdefault("custom_components.powerni_ble", _pkg)
+# Allow running standalone via `unittest` without Home Assistant installed,
+# without shadowing the real package when `pytest` loads Home Assistant.
+try:
+    import homeassistant  # noqa: F401
+except ImportError:
+    _cc = types.ModuleType("custom_components")
+    _cc.__path__ = [str(ROOT / "custom_components")]
+    _pkg = types.ModuleType("custom_components.powerni_ble")
+    _pkg.__path__ = [str(PKG_ROOT)]
+    sys.modules.setdefault("custom_components", _cc)
+    sys.modules.setdefault("custom_components.powerni_ble", _pkg)
 
 from custom_components.powerni_ble import client as client_mod  # noqa: E402
 from custom_components.powerni_ble.client import (  # noqa: E402
@@ -32,18 +36,6 @@ from custom_components.powerni_ble.client import (  # noqa: E402
     async_read_meter,
     async_read_survey,
     merge_meter_data,
-)
-from custom_components.powerni_ble.survey import (  # noqa: E402
-    aggregate_hourly,
-    counter_delta_kwh,
-    decode_survey_date,
-    parse_survey_blocks,
-)
-from custom_components.powerni_ble.tracking import (  # noqa: E402
-    detect_top_up,
-    is_stale,
-    record_read_times,
-    stale_after,
 )
 from custom_components.powerni_ble.const import (  # noqa: E402
     ALL_SECTIONS,
@@ -75,6 +67,18 @@ from custom_components.powerni_ble.const import (  # noqa: E402
     clamp_scan_interval,
     retry_interval_minutes,
     sections_due,
+)
+from custom_components.powerni_ble.survey import (  # noqa: E402
+    aggregate_hourly,
+    counter_delta_kwh,
+    decode_survey_date,
+    parse_survey_blocks,
+)
+from custom_components.powerni_ble.tracking import (  # noqa: E402
+    detect_top_up,
+    is_stale,
+    record_read_times,
+    stale_after,
 )
 
 
@@ -477,9 +481,9 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(client_mod, "TRANSPARENT_ACK_TIMEOUT", 0.05),
             patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+            self.assertRaises(PowerNIProtocolError),
         ):
-            with self.assertRaises(PowerNIProtocolError):
-                await async_read_meter(client)  # type: ignore[arg-type]
+            await async_read_meter(client)  # type: ignore[arg-type]
         self.assertTrue(client.notify_started)
         self.assertTrue(client.notify_stopped)
         self.assertEqual(client.writes[-1][1], CMD_LEAVE_TRANSPARENT)
@@ -507,7 +511,7 @@ class TestClampScanInterval(unittest.TestCase):
 class TestTracking(unittest.TestCase):
     """Tests for reading freshness and top-up detection."""
 
-    NOW = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
+    NOW = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
 
     def test_stale_after_never_below_24h_or_three_polls(self) -> None:
         self.assertEqual(stale_after(15), timedelta(hours=24))
@@ -598,7 +602,7 @@ class TestRetryInterval(unittest.TestCase):
 class TestSectionsDue(unittest.TestCase):
     """Slow-changing readings are only fetched when due."""
 
-    NOW = datetime(2026, 11, 22, 18, 0, tzinfo=timezone.utc)
+    NOW = datetime(2026, 11, 22, 18, 0, tzinfo=UTC)
 
     def test_first_poll_reads_everything(self) -> None:
         self.assertEqual(sections_due(self.NOW, {}), ALL_SECTIONS)
@@ -629,7 +633,7 @@ class TestSectionsDue(unittest.TestCase):
         self.assertIn(SECTION_SPEND, sections_due(self.NOW, last))
 
     def test_spend_due_after_midnight(self) -> None:
-        now = datetime(2026, 11, 23, 0, 5, tzinfo=timezone.utc)
+        now = datetime(2026, 11, 23, 0, 5, tzinfo=UTC)
         last = {
             SECTION_UNITS: now - timedelta(minutes=5),
             SECTION_SPEND: now - timedelta(minutes=20),
@@ -853,7 +857,7 @@ class TestSurveyParser(unittest.TestCase):
     """Tests for 0xA0 binary survey date decoding, wrap-around, and hourly rollup."""
 
     def test_decode_survey_date_and_counter_wraparound(self) -> None:
-        day = datetime(2026, 11, 22, tzinfo=timezone.utc)
+        day = datetime(2026, 11, 22, tzinfo=UTC)
         header = encode_survey_date_block(day)
         self.assertEqual(decode_survey_date(header), day)
         self.assertIsNone(decode_survey_date(b"\x00\x00\x00"))
@@ -862,8 +866,8 @@ class TestSurveyParser(unittest.TestCase):
         self.assertEqual(counter_delta_kwh(None, 100), 0.0)
 
     def test_parse_multi_day_newest_first_and_aggregate_hourly(self) -> None:
-        day1 = datetime(2026, 11, 21, tzinfo=timezone.utc)
-        day2 = datetime(2026, 11, 22, tzinfo=timezone.utc)
+        day1 = datetime(2026, 11, 21, tzinfo=UTC)
+        day2 = datetime(2026, 11, 22, tzinfo=UTC)
 
         # Build constant +16 counts (0.1 kWh) per half-hour across day1 -> day2 (00:00..02:30 populated on day2)
         c1 = [1000 + i * 16 for i in range(48)]
@@ -872,7 +876,7 @@ class TestSurveyParser(unittest.TestCase):
 
         # Meter sends newest day first
         blocks = encode_survey_day(day2, c2) + encode_survey_day(day1, c1)
-        slots = parse_survey_blocks(blocks, tz=timezone.utc)
+        slots = parse_survey_blocks(blocks, tz=UTC)
         self.assertEqual(len(slots), 96)
         self.assertEqual(slots[0].start, day1)
         self.assertFalse(slots[0].has_baseline)
@@ -882,7 +886,7 @@ class TestSurveyParser(unittest.TestCase):
         self.assertEqual(slots[48].kwh, 0.1)
 
         # Current time = 2026-11-22 02:45 UTC -> hour 02:00 is incomplete (and 02:30 is empty)
-        now = datetime(2026, 11, 22, 2, 45, tzinfo=timezone.utc)
+        now = datetime(2026, 11, 22, 2, 45, tzinfo=UTC)
         hourly = aggregate_hourly(slots, now)
         # day1 has hours 01:00..23:00 (23 hours, since hour 00:00 lacks pre-day1 baseline) + day2 hours 00:00..01:00 (2 hours)
         self.assertEqual(len(hourly), 25)
@@ -906,7 +910,7 @@ class TestAsyncReadSurvey(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((c3, b3, ack3, end3), ([RSP_KEEPALIVE_ACK], [], False, True))
 
     async def test_async_read_survey_reads_day_keepalive_and_end_marker(self) -> None:
-        day = datetime(2026, 11, 22, tzinfo=timezone.utc)
+        day = datetime(2026, 11, 22, tzinfo=UTC)
         blocks = encode_survey_day(day, [100 + i for i in range(48)])
         script = {
             CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
@@ -960,7 +964,7 @@ class TestAsyncReadSurvey(unittest.IsolatedAsyncioTestCase):
         self.assertLess(time.monotonic() - started, 0.5)
 
     async def test_async_read_survey_retries_single_dropped_f1_when_buffer_empty(self) -> None:
-        day = datetime(2026, 11, 22, tzinfo=timezone.utc)
+        day = datetime(2026, 11, 22, tzinfo=UTC)
         blocks = encode_survey_day(day, [100 + i for i in range(48)])
         script = {
             CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
@@ -998,9 +1002,9 @@ class TestAsyncReadSurvey(unittest.IsolatedAsyncioTestCase):
             patch.object(client_mod, "SURVEY_PACING_DELAY", 0.0),
             patch.object(client_mod, "LINE_TIMEOUT", 0.03),
             patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+            self.assertRaises(PowerNIProtocolError) as ctx,
         ):
-            with self.assertRaises(PowerNIProtocolError) as ctx:
-                await async_read_survey(client, days=1)  # type: ignore[arg-type]
+            await async_read_survey(client, days=1)  # type: ignore[arg-type]
 
         self.assertIn("pending='8a 01 02 03'", str(ctx.exception))
         f1_writes = [w for w in client.writes if w[1] == CMD_SURVEY_NEXT]

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta
-import re
 
 DOMAIN = "powerni_ble"
 
@@ -142,7 +142,7 @@ def retry_interval_minutes(consecutive_failures: int, scan_interval: int) -> int
 def clamp_scan_interval(value: float | int | str | None) -> int:
     """Parse and clamp a poll interval in minutes to the valid range."""
     try:
-        minutes = int(round(float(value)))  # type: ignore[arg-type]
+        minutes = round(float(value))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         minutes = DEFAULT_SCAN_INTERVAL_MINUTES
     return max(MIN_SCAN_INTERVAL_MINUTES, min(MAX_SCAN_INTERVAL_MINUTES, minutes))

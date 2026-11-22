@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-import logging
 from statistics import median
-import time
 from typing import Any
 
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakCharacteristicNotFoundError, BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
-
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.components.recorder import get_instance
@@ -656,7 +655,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                     ble_device,
                     self.device_name,
                     disconnected_callback=_on_disconnect,
-                    ble_device_callback=self._get_ble_device,
+                    ble_device_callback=self._require_ble_device,
                     use_services_cache=True,
                     pair=True,
                     max_attempts=3,
@@ -673,7 +672,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 if client is not None and client.is_connected:
                     try:
                         await client.disconnect()
-                    except Exception as err:  # noqa: BLE001
+                    except Exception as err:
                         _LOGGER.debug(
                             "Ignoring error disconnecting survey client %s: %s",
                             self.address,
@@ -739,8 +738,10 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 disconnected = asyncio.Event()
                 should_retry = False
 
-                def _on_disconnect(_client: Any) -> None:
-                    disconnected.set()
+                def _on_disconnect(
+                    _client: Any, event: asyncio.Event = disconnected
+                ) -> None:
+                    event.set()
 
                 try:
                     self._set_poll_status(POLL_STATUS_CONNECTING)
@@ -758,7 +759,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                         ble_device,
                         self.device_name,
                         disconnected_callback=_on_disconnect,
-                        ble_device_callback=self._get_ble_device,
+                        ble_device_callback=self._require_ble_device,
                         use_services_cache=True,
                         pair=True,
                         max_attempts=3,
@@ -782,7 +783,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                         # mid-read disconnect clears client.services on the backend.
                         try:
                             await client.clear_cache()
-                        except Exception as cache_err:  # noqa: BLE001
+                        except Exception as cache_err:
                             _LOGGER.debug(
                                 "Ignoring error clearing service cache for %s: %s",
                                 self.address,
