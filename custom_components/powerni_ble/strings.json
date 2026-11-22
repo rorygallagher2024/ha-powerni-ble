@@ -36,7 +36,8 @@
         "description": "Adjust how often Home Assistant polls your Freedom Unit (1 to 1440 minutes, default 15) and optionally pin it to the bonded Bluetooth proxy or adapter.",
         "data": {
           "scan_interval": "Poll interval (minutes)",
-          "proxy_source": "Bluetooth proxy / adapter"
+          "proxy_source": "Bluetooth proxy / adapter",
+          "auto_sync_history": "Automatically sync 14-day energy history (every 6 hours)"
         }
       }
     }
@@ -108,6 +109,12 @@
       "updating": {
         "name": "Updating"
       }
+    }
+  },
+  "issues": {
+    "pairing_required": {
+      "title": "Bluetooth pairing required for {name}",
+      "description": "Home Assistant could not authenticate with **{name}** (`{address}`) via **{proxy}**.\n\nPower NI Freedom Units require a one-time 6-digit PIN bond on the Bluetooth adapter or ESPHome proxy connecting to them. Pair the meter with that adapter/proxy (or pin the already-bonded proxy under **Configure**). If the meter ignores pairing, enter `*159268#` (`B#######` units) or `*0#` (`PNI#####` units) on the keypad to reset its Bluetooth radio."
     }
   }
 }

@@ -61,3 +61,24 @@ def detect_top_up(
     if increase >= TOP_UP_MIN_INCREASE:
         return increase
     return None
+
+
+_AUTH_ERROR_MARKERS: tuple[str, ...] = (
+    "insufficient authorization",
+    "insufficient authentication",
+    "insufficient encryption",
+    "authentication",
+    "pairing",
+    "auth fail",
+    "error: 102",
+    "err=102",
+    "status=8",
+    "status: 8",
+    "bonded",
+)
+
+
+def is_auth_or_pairing_error(err: BaseException) -> bool:
+    """Return True when a BLE error indicates a missing or rejected 6-digit PIN bond."""
+    message = str(err).lower()
+    return any(marker in message for marker in _AUTH_ERROR_MARKERS)

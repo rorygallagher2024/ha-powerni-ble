@@ -5,10 +5,15 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, CONF_NAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
-from .coordinator import STORE_VERSION, PowerNIDataUpdateCoordinator
+from .coordinator import (
+    STORE_VERSION,
+    PowerNIDataUpdateCoordinator,
+    pairing_issue_id_for_address,
+)
 
 PowerNIConfigEntry = ConfigEntry[PowerNIDataUpdateCoordinator]
 
@@ -51,5 +56,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> 
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the stored top-up state when the meter is removed."""
+    """Delete persisted state and any open repair issues when removed."""
+    address = (entry.data.get(CONF_ADDRESS) or entry.unique_id or "").upper()
+    if address:
+        ir.async_delete_issue(hass, DOMAIN, pairing_issue_id_for_address(address))
     await Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()

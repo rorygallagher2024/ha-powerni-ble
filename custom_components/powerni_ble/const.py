@@ -53,11 +53,17 @@ RSSI_MIN_PUBLISH_INTERVAL_SECONDS = 60.0
 RSSI_MEDIAN_WINDOW = 15
 
 # Options
+CONF_AUTO_SYNC_HISTORY = "auto_sync_history"
 CONF_PROXY_SOURCE = "proxy_source"
 CONF_SCAN_INTERVAL = "scan_interval"
+DEFAULT_AUTO_SYNC_HISTORY = True
 DEFAULT_SCAN_INTERVAL_MINUTES = 15
 MIN_SCAN_INTERVAL_MINUTES = 1
 MAX_SCAN_INTERVAL_MINUTES = 1440
+PAIRING_LEARN_MORE_URL = (
+    "https://github.com/rorygallagher2024/ha-powerni-ble"
+    "#prerequisites-one-time-6-digit-pin-pairing"
+)
 
 # After a failed poll, retry sooner than the normal interval (minutes, per
 # consecutive failure). Never slower than the configured interval.

@@ -76,6 +76,7 @@ from custom_components.powerni_ble.survey import (  # noqa: E402
 )
 from custom_components.powerni_ble.tracking import (  # noqa: E402
     detect_top_up,
+    is_auth_or_pairing_error,
     is_stale,
     record_read_times,
     stale_after,
@@ -550,6 +551,19 @@ class TestTracking(unittest.TestCase):
         self.assertIsNone(detect_top_up(148.36, 148.90))
         self.assertIsNone(detect_top_up(None, 150.0))
         self.assertIsNone(detect_top_up(150.0, None))
+
+    def test_is_auth_or_pairing_error(self) -> None:
+        self.assertTrue(
+            is_auth_or_pairing_error(Exception("Insufficient authorization (8)"))
+        )
+        self.assertTrue(
+            is_auth_or_pairing_error(Exception("Pairing failed due to error: 102"))
+        )
+        self.assertTrue(is_auth_or_pairing_error(Exception("SMP auth fail status=8")))
+        self.assertFalse(is_auth_or_pairing_error(TimeoutError("Timed out")))
+        self.assertFalse(
+            is_auth_or_pairing_error(PowerNIDisconnectedError("BLE link dropped"))
+        )
 
 
 class TestMergeMeterData(unittest.TestCase):
