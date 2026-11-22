@@ -1,0 +1,71 @@
+# Temporary ESPHome firmware used ONCE to bond an ESP32 with a Power NI
+# Freedom Unit using a 6-digit MITM passkey, storing the bond in ESP32 NVS flash.
+#
+# Usage:
+# 1. Back up / keep your normal stock ESPHome firmware binary handy so you can
+#    flash it right back afterward (NVS bond keys survive OTA updates).
+# 2. Replace the placeholder MAC address, API encryption key, and PIN below.
+# 3. Compile & OTA-upload this temporary config to your ESP32.
+# 4. Watch logs (`esphome logs`), then enter `123456#` (your chosen PIN + `#`)
+#    on your physical Freedom Unit keypad when connected.
+# 5. Once bonded, immediately OTA-flash your normal ESPHome Bluetooth Proxy
+#    firmware back onto the ESP32 and pin `proxy_source` in HA Options.
+
+esphome:
+  name: powerni-pair-temp
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: "REPLACE_WITH_32_BYTE_BASE64_KEY"
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+esp32_ble:
+  io_capability: display_only
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+
+ble_client:
+  - mac_address: "AA:BB:CC:DD:EE:FF"
+    id: powerni_pair
+    auto_connect: true
+    on_connect:
+      then:
+        - lambda: |-
+            int bond_cnt = esp_ble_get_bond_device_num();
+            ESP_LOGW("powerni_pair", "Connected to Freedom Unit (existing NVS bonds=%d)", bond_cnt);
+            esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_BOND_MITM;
+            uint8_t key_size = 16;
+            uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+            uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+            uint32_t passkey = 123456;
+            esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(auth_req));
+            esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(key_size));
+            esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(init_key));
+            esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(rsp_key));
+            esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, &passkey, sizeof(passkey));
+            esp_err_t err = esp_ble_set_encryption(id(powerni_pair)->get_remote_bda(), ESP_BLE_SEC_ENCRYPT_MITM);
+            ESP_LOGW("powerni_pair", "Started MITM+BOND pairing (err=%d, static_pin=123456)", err);
+    on_passkey_notification:
+      then:
+        - lambda: |-
+            ESP_LOGW("powerni_pair", "=== ENTER PASSKEY ON FREEDOM UNIT: %06u# ===", passkey);
+    on_disconnect:
+      then:
+        - lambda: |-
+            ESP_LOGW("powerni_pair", "Disconnected from Freedom Unit (NVS bonds=%d)", esp_ble_get_bond_device_num());

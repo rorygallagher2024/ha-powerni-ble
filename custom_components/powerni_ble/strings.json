@@ -1,0 +1,44 @@
+{
+  "config": {
+    "step": {
+      "bluetooth_confirm": {
+        "title": "Confirm Power NI Keypad+ Meter",
+        "description": "Set up {name} ({address}) with Home Assistant?"
+      },
+      "user": {
+        "title": "Select Power NI Keypad+ Meter",
+        "description": "Choose a discovered meter or select manual entry.",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "manual": {
+        "title": "Enter Meter Bluetooth MAC Address",
+        "description": "Enter the Bluetooth MAC address of your Power NI Freedom Unit (for example, AA:BB:CC:DD:EE:FF).",
+        "data": {
+          "address": "Bluetooth MAC Address",
+          "name": "Device Name"
+        }
+      }
+    },
+    "error": {
+      "invalid_mac": "Invalid Bluetooth MAC address."
+    },
+    "abort": {
+      "already_configured": "This Power NI meter is already configured.",
+      "not_supported": "This Bluetooth device is not a supported Power NI meter."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Power NI Keypad+ BLE Options",
+        "description": "Adjust how often Home Assistant polls your Freedom Unit (1 to 1440 minutes, default 15) and optionally pin it to the bonded Bluetooth proxy or adapter.",
+        "data": {
+          "scan_interval": "Poll interval (minutes)",
+          "proxy_source": "Bluetooth proxy / adapter"
+        }
+      }
+    }
+  }
+}

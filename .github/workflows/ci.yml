@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile check
+        run: python -m py_compile custom_components/powerni_ble/*.py tests/test_client.py
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Validate JSON and brand assets
+        run: |
+          python - << 'EOF'
+          import json, pathlib
+          root = pathlib.Path(".")
+          for rel in (
+              "hacs.json",
+              "custom_components/powerni_ble/manifest.json",
+              "custom_components/powerni_ble/strings.json",
+              "custom_components/powerni_ble/translations/en.json",
+          ):
+              json.loads((root / rel).read_text())
+          for icon in (
+              "custom_components/powerni_ble/brand/icon.png",
+              "custom_components/powerni_ble/brand/icon@2x.png",
+          ):
+              p = root / icon
+              assert p.is_file() and p.stat().st_size > 0, f"Missing {icon}"
+          EOF
