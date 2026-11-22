@@ -1,7 +1,7 @@
 <div align="center">
   <img src="custom_components/powerni_ble/brand/icon.png" alt="Power NI Keypad+ BLE icon" width="96" />
   <h1>Power NI Keypad+ BLE for Home Assistant</h1>
-  <p>Local, read-only Home Assistant integration for <strong>Power NI (PowerNI) Keypad+</strong> prepay electricity meters (Freedom Units) in Northern Ireland over Bluetooth.</p>
+  <p>Local Home Assistant integration for <strong>Power NI (PowerNI) Keypad+</strong> prepay electricity meters (Freedom Units) in Northern Ireland over Bluetooth.</p>
 
   <p>
     <a href="https://github.com/rorygallagher2024/ha-powerni-ble/releases"><img src="https://img.shields.io/github/v/release/rorygallagher2024/ha-powerni-ble?style=flat-square" alt="GitHub Release" /></a>
