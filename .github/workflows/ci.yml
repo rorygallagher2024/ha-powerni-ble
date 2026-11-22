@@ -28,10 +28,14 @@ jobs:
               "custom_components/powerni_ble/translations/en.json",
           ):
               json.loads((root / rel).read_text())
-          for icon in (
+          for asset in (
               "custom_components/powerni_ble/brand/icon.png",
               "custom_components/powerni_ble/brand/icon@2x.png",
+              "docs/images/device-page.png",
+              "docs/images/configure-dialog.png",
+              "docs/images/energy-dashboard.png",
           ):
-              p = root / icon
-              assert p.is_file() and p.stat().st_size > 0, f"Missing {icon}"
+              p = root / asset
+              assert p.is_file() and p.stat().st_size > 0, f"Missing {asset}"
+              assert p.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", f"Invalid PNG header: {asset}"
           EOF

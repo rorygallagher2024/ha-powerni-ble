@@ -21,6 +21,7 @@ from .const import (
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
+    clamp_scan_interval,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         self.proxy_source: str = (
             config_entry.options.get(CONF_PROXY_SOURCE) or ""
         ).strip()
-        scan_minutes = int(
+        self.scan_interval_minutes = clamp_scan_interval(
             config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_MINUTES)
         )
         self._connect_lock = asyncio.Lock()
@@ -53,8 +54,47 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             _LOGGER,
             config_entry=config_entry,
             name=f"{DOMAIN}_{self.address}",
-            update_interval=timedelta(minutes=scan_minutes),
+            update_interval=timedelta(minutes=self.scan_interval_minutes),
         )
+
+    def set_scan_interval(self, minutes: int) -> bool:
+        """Update the poll interval and reschedule the refresh timer if changed."""
+        clamped = clamp_scan_interval(minutes)
+        interval = timedelta(minutes=clamped)
+        if clamped == self.scan_interval_minutes and self.update_interval == interval:
+            return False
+
+        self.scan_interval_minutes = clamped
+        self.update_interval = interval
+        if self._listeners:
+            self._schedule_refresh()
+        self.async_update_listeners()
+        _LOGGER.debug(
+            "Updated poll interval for %s (%s) to %d min",
+            self.device_name,
+            self.address,
+            clamped,
+        )
+        return True
+
+    async def async_apply_options(self) -> None:
+        """Apply updated config entry options in-place."""
+        options = self.config_entry.options
+        self.set_scan_interval(
+            clamp_scan_interval(
+                options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_MINUTES)
+            )
+        )
+        new_proxy = (options.get(CONF_PROXY_SOURCE) or "").strip()
+        if new_proxy != self.proxy_source:
+            self.proxy_source = new_proxy
+            _LOGGER.debug(
+                "Updated Bluetooth proxy source for %s (%s) to %s",
+                self.device_name,
+                self.address,
+                new_proxy or "automatic",
+            )
+            await self.async_request_refresh()
 
     def _get_ble_device(self) -> BLEDevice | None:
         """Resolve the target BLEDevice (optionally pinned to a specific proxy)."""

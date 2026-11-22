@@ -209,9 +209,13 @@ class PowerNIOptionsFlow(OptionsFlow):
                 self.hass, address, connectable=True
             ):
                 source = sd.scanner.source
-                scanner_choices[source] = (
-                    f"{sd.scanner.name} ({source}, {sd.advertisement.rssi} dBm)"
-                )
+                label = sd.scanner.name
+                if source.upper() in label.upper():
+                    scanner_choices[source] = f"{label} ({sd.advertisement.rssi} dBm)"
+                else:
+                    scanner_choices[source] = (
+                        f"{label} ({source}, {sd.advertisement.rssi} dBm)"
+                    )
         if current_proxy and current_proxy not in scanner_choices:
             scanner_choices[current_proxy] = f"{current_proxy} (configured)"
 

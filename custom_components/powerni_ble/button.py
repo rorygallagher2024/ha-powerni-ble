@@ -43,6 +43,11 @@ class PowerNIRefreshButton(
             model="Keypad+ Freedom Unit",
         )
 
+    @property
+    def available(self) -> bool:
+        """Allow manual refresh even if the last BLE read failed."""
+        return True
+
     async def async_press(self) -> None:
         """Request an immediate coordinator refresh."""
         await self.coordinator.async_request_refresh()

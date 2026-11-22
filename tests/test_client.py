@@ -34,11 +34,15 @@ from custom_components.powerni_ble.const import (  # noqa: E402
     CMD_PREV_USAGE,
     CMD_TOTAL_CONSUMPTION,
     CMD_TOTAL_UNITS,
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    MAX_SCAN_INTERVAL_MINUTES,
+    MIN_SCAN_INTERVAL_MINUTES,
     NOTIFY_UUID,
     RSP_DISCONNECT_ACK,
     RSP_KEEPALIVE_ACK,
     RSP_TRANSPARENT_ACK,
     WRITE_UUID,
+    clamp_scan_interval,
 )
 
 
@@ -382,6 +386,25 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.notify_started)
         self.assertTrue(client.notify_stopped)
         self.assertEqual(client.writes[-1][1], CMD_LEAVE_TRANSPARENT)
+
+
+class TestClampScanInterval(unittest.TestCase):
+    """Tests for poll interval validation and clamping."""
+
+    def test_valid_and_rounded_values(self) -> None:
+        self.assertEqual(clamp_scan_interval(15), 15)
+        self.assertEqual(clamp_scan_interval("5"), 5)
+        self.assertEqual(clamp_scan_interval(2.6), 3)
+        self.assertEqual(clamp_scan_interval(2.4), 2)
+
+    def test_bounds_clamping(self) -> None:
+        self.assertEqual(clamp_scan_interval(0), MIN_SCAN_INTERVAL_MINUTES)
+        self.assertEqual(clamp_scan_interval(-5), MIN_SCAN_INTERVAL_MINUTES)
+        self.assertEqual(clamp_scan_interval(9999), MAX_SCAN_INTERVAL_MINUTES)
+
+    def test_invalid_falls_back_to_default(self) -> None:
+        self.assertEqual(clamp_scan_interval(None), DEFAULT_SCAN_INTERVAL_MINUTES)
+        self.assertEqual(clamp_scan_interval("not-a-number"), DEFAULT_SCAN_INTERVAL_MINUTES)
 
 
 if __name__ == "__main__":

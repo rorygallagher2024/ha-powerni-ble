@@ -35,3 +35,12 @@ CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL_MINUTES = 15
 MIN_SCAN_INTERVAL_MINUTES = 1
 MAX_SCAN_INTERVAL_MINUTES = 1440
+
+
+def clamp_scan_interval(value: float | int | str | None) -> int:
+    """Parse and clamp a poll interval in minutes to the valid range."""
+    try:
+        minutes = int(round(float(value)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        minutes = DEFAULT_SCAN_INTERVAL_MINUTES
+    return max(MIN_SCAN_INTERVAL_MINUTES, min(MAX_SCAN_INTERVAL_MINUTES, minutes))

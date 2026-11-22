@@ -10,7 +10,7 @@ from .coordinator import PowerNIDataUpdateCoordinator
 
 PowerNIConfigEntry = ConfigEntry[PowerNIDataUpdateCoordinator]
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON, Platform.NUMBER]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> bool:
@@ -29,8 +29,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> b
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: PowerNIConfigEntry) -> None:
-    """Reload config entry when options change."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Apply updated options without reloading entities."""
+    await entry.runtime_data.async_apply_options()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> bool:
