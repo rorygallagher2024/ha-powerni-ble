@@ -7,7 +7,7 @@ from datetime import timedelta
 import logging
 
 from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError
+from bleak.exc import BleakCharacteristicNotFoundError, BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 from homeassistant.components import bluetooth
@@ -15,13 +15,20 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .client import PowerNIMeterData, PowerNIProtocolError, async_read_meter
+from .client import (
+    PowerNIMeterData,
+    PowerNIProtocolError,
+    async_read_meter,
+    merge_meter_data,
+)
 from .const import (
     CONF_PROXY_SOURCE,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
+    POLL_TIMEOUT_SECONDS,
     clamp_scan_interval,
+    retry_interval_minutes,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,6 +55,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_MINUTES)
         )
         self._connect_lock = asyncio.Lock()
+        self._consecutive_failures = 0
 
         super().__init__(
             hass,
@@ -60,7 +68,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
     def set_scan_interval(self, minutes: int) -> bool:
         """Update the poll interval and reschedule the refresh timer if changed."""
         clamped = clamp_scan_interval(minutes)
-        interval = timedelta(minutes=clamped)
+        interval = self._next_interval(clamped)
         if clamped == self.scan_interval_minutes and self.update_interval == interval:
             return False
 
@@ -96,6 +104,39 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             )
             await self.async_request_refresh()
 
+    def _next_interval(self, scan_interval: int | None = None) -> timedelta:
+        """Return the next poll delay, shortened while recovering from failures."""
+        return timedelta(
+            minutes=retry_interval_minutes(
+                self._consecutive_failures,
+                self.scan_interval_minutes if scan_interval is None else scan_interval,
+            )
+        )
+
+    def _record_result(self, success: bool) -> None:
+        """Track consecutive failures and adjust the next poll delay."""
+        if success:
+            if self._consecutive_failures:
+                _LOGGER.info(
+                    "Power NI meter %s (%s) recovered after %d failed poll(s)",
+                    self.device_name,
+                    self.address,
+                    self._consecutive_failures,
+                )
+            self._consecutive_failures = 0
+        else:
+            self._consecutive_failures += 1
+        # DataUpdateCoordinator schedules the next refresh from update_interval
+        # after this update returns, so setting it here takes effect immediately.
+        self.update_interval = self._next_interval()
+        if not success:
+            _LOGGER.debug(
+                "Retrying Power NI meter %s in %s (failure #%d)",
+                self.address,
+                self.update_interval,
+                self._consecutive_failures,
+            )
+
     def _get_ble_device(self) -> BLEDevice | None:
         """Resolve the target BLEDevice (optionally pinned to a specific proxy)."""
         if self.proxy_source:
@@ -110,6 +151,30 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         )
 
     async def _async_update_data(self) -> PowerNIMeterData:
+        """Poll the meter, keeping last-known values for fields a read missed."""
+        try:
+            async with asyncio.timeout(POLL_TIMEOUT_SECONDS):
+                new_data = await self._async_poll()
+        except TimeoutError as err:
+            self._record_result(False)
+            raise UpdateFailed(
+                f"Polling {self.address} timed out after {POLL_TIMEOUT_SECONDS}s"
+            ) from err
+        except UpdateFailed:
+            self._record_result(False)
+            raise
+        self._record_result(True)
+
+        merged, carried = merge_meter_data(new_data, self.data)
+        if carried:
+            _LOGGER.debug(
+                "Partial read from %s; kept previous values for: %s",
+                self.address,
+                ", ".join(carried),
+            )
+        return merged
+
+    async def _async_poll(self) -> PowerNIMeterData:
         """Connect over BLE, read telemetry, and disconnect."""
         async with self._connect_lock:
             ble_device = self._get_ble_device()
@@ -143,6 +208,17 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 )
                 return await async_read_meter(client, _LOGGER)
             except (BleakError, PowerNIProtocolError, TimeoutError) as err:
+                if isinstance(err, BleakCharacteristicNotFoundError) and client is not None:
+                    # The cached GATT table may be stale or incomplete; force
+                    # service discovery on the next connection.
+                    try:
+                        await client.clear_cache()
+                    except Exception as cache_err:  # noqa: BLE001
+                        _LOGGER.debug(
+                            "Ignoring error clearing service cache for %s: %s",
+                            self.address,
+                            cache_err,
+                        )
                 _LOGGER.warning(
                     "Failed reading Power NI meter %s (%s, details=%s): %s",
                     self.device_name,

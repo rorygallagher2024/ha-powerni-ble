@@ -36,6 +36,22 @@ DEFAULT_SCAN_INTERVAL_MINUTES = 15
 MIN_SCAN_INTERVAL_MINUTES = 1
 MAX_SCAN_INTERVAL_MINUTES = 1440
 
+# After a failed poll, retry sooner than the normal interval (minutes, per
+# consecutive failure). Never slower than the configured interval.
+RETRY_BACKOFF_MINUTES = (1, 2, 5)
+
+# Upper bound for one complete connect + read cycle, so a hung BLE operation
+# can never hold the connection lock and block later polls.
+POLL_TIMEOUT_SECONDS = 180
+
+
+def retry_interval_minutes(consecutive_failures: int, scan_interval: int) -> int:
+    """Return the delay before the next poll given consecutive failures."""
+    if consecutive_failures <= 0:
+        return scan_interval
+    step = min(consecutive_failures, len(RETRY_BACKOFF_MINUTES)) - 1
+    return min(RETRY_BACKOFF_MINUTES[step], scan_interval)
+
 
 def clamp_scan_interval(value: float | int | str | None) -> int:
     """Parse and clamp a poll interval in minutes to the valid range."""

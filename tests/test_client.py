@@ -22,8 +22,10 @@ sys.modules.setdefault("custom_components.powerni_ble", _pkg)
 from custom_components.powerni_ble import client as client_mod  # noqa: E402
 from custom_components.powerni_ble.client import (  # noqa: E402
     FrameAssembler,
+    PowerNIMeterData,
     PowerNIProtocolError,
     async_read_meter,
+    merge_meter_data,
 )
 from custom_components.powerni_ble.const import (  # noqa: E402
     CMD_DISPLAY_RESET,
@@ -43,6 +45,7 @@ from custom_components.powerni_ble.const import (  # noqa: E402
     RSP_TRANSPARENT_ACK,
     WRITE_UUID,
     clamp_scan_interval,
+    retry_interval_minutes,
 )
 
 
@@ -409,3 +412,50 @@ class TestClampScanInterval(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMergeMeterData(unittest.TestCase):
+    """Partial reads keep last-known values instead of going unknown."""
+
+    def test_no_previous_returns_new(self) -> None:
+        new = PowerNIMeterData(balance=1.0)
+        merged, carried = merge_meter_data(new, None)
+        self.assertIs(merged, new)
+        self.assertEqual(carried, [])
+
+    def test_missing_fields_filled_from_previous(self) -> None:
+        previous = PowerNIMeterData(
+            balance=148.81, days_left=51, current_load_kw=0.4, total_import_kwh=11407
+        )
+        new = PowerNIMeterData(balance=148.79, total_import_kwh=11408)
+        merged, carried = merge_meter_data(new, previous)
+        self.assertEqual(merged.balance, 148.79)
+        self.assertEqual(merged.total_import_kwh, 11408)
+        self.assertEqual(merged.days_left, 51)
+        self.assertEqual(merged.current_load_kw, 0.4)
+        self.assertCountEqual(carried, ["days_left", "current_load_kw"])
+        # The fresh read object itself is not mutated.
+        self.assertIsNone(new.days_left)
+
+    def test_zero_and_negative_values_are_not_overwritten(self) -> None:
+        previous = PowerNIMeterData(balance=10.0, current_load_kw=1.2)
+        new = PowerNIMeterData(balance=-2.5, current_load_kw=0.0)
+        merged, carried = merge_meter_data(new, previous)
+        self.assertEqual(merged.balance, -2.5)
+        self.assertEqual(merged.current_load_kw, 0.0)
+        self.assertEqual(carried, [])
+
+
+class TestRetryInterval(unittest.TestCase):
+    """Failed polls retry sooner, then return to the configured interval."""
+
+    def test_backoff_steps(self) -> None:
+        self.assertEqual(retry_interval_minutes(0, 15), 15)
+        self.assertEqual(retry_interval_minutes(1, 15), 1)
+        self.assertEqual(retry_interval_minutes(2, 15), 2)
+        self.assertEqual(retry_interval_minutes(3, 15), 5)
+        self.assertEqual(retry_interval_minutes(10, 15), 5)
+
+    def test_never_slower_than_configured_interval(self) -> None:
+        self.assertEqual(retry_interval_minutes(3, 2), 2)
+        self.assertEqual(retry_interval_minutes(5, 1), 1)

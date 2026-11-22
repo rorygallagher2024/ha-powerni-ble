@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from dataclasses import dataclass
 import logging
 import re
@@ -101,6 +102,26 @@ class PowerNIMeterData:
                 self.last_month_cost,
             )
         )
+
+
+def merge_meter_data(
+    new: PowerNIMeterData, previous: PowerNIMeterData | None
+) -> tuple[PowerNIMeterData, list[str]]:
+    """Fill fields missing from a partial read with the previous known values.
+
+    Returns the merged data and the names of the fields carried over.
+    """
+    if previous is None:
+        return new, []
+    carried: list[str] = []
+    merged = dataclasses.replace(new)
+    for field in dataclasses.fields(PowerNIMeterData):
+        if getattr(merged, field.name) is None:
+            old_value = getattr(previous, field.name)
+            if old_value is not None:
+                setattr(merged, field.name, old_value)
+                carried.append(field.name)
+    return merged, carried
 
 
 class FrameAssembler:
