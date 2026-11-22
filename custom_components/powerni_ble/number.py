@@ -36,7 +36,7 @@ class PowerNIPollIntervalNumber(
     """Configuration entity controlling how often the meter is polled."""
 
     _attr_has_entity_name = True
-    _attr_name = "Poll interval"
+    _attr_translation_key = "poll_interval"
     _attr_icon = "mdi:timer-cog-outline"
     _attr_device_class = NumberDeviceClass.DURATION
     _attr_entity_category = EntityCategory.CONFIG

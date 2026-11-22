@@ -11,23 +11,36 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: requirements-dev.txt
+      - name: Install dev dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
+      - name: Lint with ruff
+        run: ruff check custom_components tests
+      - name: Type check with mypy
+        run: mypy custom_components/powerni_ble
       - name: Compile check
-        run: python -m py_compile custom_components/powerni_ble/*.py tests/test_client.py
-      - name: Unit tests
-        run: python -m unittest discover -s tests -v
-      - name: Validate JSON and brand assets
+        run: python -m py_compile custom_components/powerni_ble/*.py tests/*.py
+      - name: Run tests
+        run: pytest -v
+      - name: Validate JSON, translations, and brand assets
         run: |
           python - << 'EOF'
           import json, pathlib
           root = pathlib.Path(".")
+          parsed = {}
           for rel in (
               "hacs.json",
               "custom_components/powerni_ble/manifest.json",
               "custom_components/powerni_ble/strings.json",
               "custom_components/powerni_ble/translations/en.json",
           ):
-              json.loads((root / rel).read_text())
+              parsed[rel] = json.loads((root / rel).read_text())
+          assert (
+              parsed["custom_components/powerni_ble/strings.json"]
+              == parsed["custom_components/powerni_ble/translations/en.json"]
+          ), "strings.json and translations/en.json differ"
           for asset in (
               "custom_components/powerni_ble/brand/icon.png",
               "custom_components/powerni_ble/brand/icon@2x.png",

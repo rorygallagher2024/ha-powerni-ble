@@ -33,7 +33,7 @@ class PowerNIUpdatingBinarySensor(
     """Diagnostic sensor indicating when a BLE meter read is in progress."""
 
     _attr_has_entity_name = True
-    _attr_name = "Updating"
+    _attr_translation_key = "updating"
     _attr_device_class = BinarySensorDeviceClass.RUNNING
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 

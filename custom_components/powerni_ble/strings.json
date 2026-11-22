@@ -43,6 +43,30 @@
   },
   "entity": {
     "sensor": {
+      "balance": {
+        "name": "Balance"
+      },
+      "days_left": {
+        "name": "Days left"
+      },
+      "current_load": {
+        "name": "Current load"
+      },
+      "current_cost_rate": {
+        "name": "Current cost rate"
+      },
+      "total_import_energy": {
+        "name": "Total import energy"
+      },
+      "yesterday_spend": {
+        "name": "Yesterday's spend"
+      },
+      "last_7_days_spend": {
+        "name": "Last 7 days spend"
+      },
+      "last_month_spend": {
+        "name": "Last month spend"
+      },
       "poll_status": {
         "name": "Poll status",
         "state": {
@@ -53,6 +77,36 @@
           "waiting": "Waiting for meter",
           "error": "Error"
         }
+      },
+      "last_successful_read": {
+        "name": "Last successful read"
+      },
+      "last_top_up": {
+        "name": "Last top-up"
+      },
+      "last_top_up_time": {
+        "name": "Last top-up time"
+      },
+      "signal_strength": {
+        "name": "Signal strength"
+      }
+    },
+    "button": {
+      "refresh": {
+        "name": "Refresh"
+      },
+      "sync_energy_history": {
+        "name": "Sync energy history"
+      }
+    },
+    "number": {
+      "poll_interval": {
+        "name": "Poll interval"
+      }
+    },
+    "binary_sensor": {
+      "updating": {
+        "name": "Updating"
       }
     }
   }

@@ -5,8 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import voluptuous as vol
-
+import probatio as vol
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,

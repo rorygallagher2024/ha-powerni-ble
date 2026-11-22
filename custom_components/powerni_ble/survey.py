@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 
 from .const import (
     RSP_SURVEY_BLOCK_HEADER,
@@ -39,7 +39,7 @@ class HourlyEnergy:
 
 
 def decode_survey_date(
-    header_block: bytes, tz: tzinfo = timezone.utc
+    header_block: bytes, tz: tzinfo = UTC
 ) -> datetime | None:
     """Decode the midnight date header of a 13-block survey day."""
     if len(header_block) < 3 or header_block[0] != RSP_SURVEY_BLOCK_HEADER:
@@ -63,7 +63,7 @@ def counter_delta_kwh(previous: int | None, current: int | None) -> float:
 
 
 def parse_survey_blocks(
-    blocks: Sequence[bytes], tz: tzinfo = timezone.utc
+    blocks: Sequence[bytes], tz: tzinfo = UTC
 ) -> list[SurveySlot]:
     """Decode raw 10-byte 0x8A survey blocks into chronological 30-minute slots.
 
@@ -123,7 +123,7 @@ def aggregate_hourly(
     slots: Sequence[SurveySlot], now_utc: datetime
 ) -> list[HourlyEnergy]:
     """Group complete 30-minute survey slots into completed UTC hourly buckets."""
-    current_hour_utc = now_utc.astimezone(timezone.utc).replace(
+    current_hour_utc = now_utc.astimezone(UTC).replace(
         minute=0, second=0, microsecond=0
     )
     by_hour: dict[datetime, list[SurveySlot]] = defaultdict(list)
@@ -131,7 +131,7 @@ def aggregate_hourly(
     for slot in slots:
         if slot.counter is None or not slot.has_baseline:
             continue
-        hour_utc = slot.start.astimezone(timezone.utc).replace(
+        hour_utc = slot.start.astimezone(UTC).replace(
             minute=0, second=0, microsecond=0
         )
         if hour_utc >= current_hour_utc:

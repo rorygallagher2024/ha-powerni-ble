@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
-from collections.abc import Callable
 import dataclasses
-from dataclasses import dataclass
 import logging
 import re
-from typing import TYPE_CHECKING, Any, TypeVar
-
-_T = TypeVar("_T")
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from .const import (
     ALL_SECTIONS,
@@ -297,18 +295,18 @@ def _check_connected(
         raise PowerNIDisconnectedError("BLE connection dropped during meter read")
 
 
-async def _wait_queue_or_disconnect(
-    queue: asyncio.Queue[_T],
+async def _wait_queue_or_disconnect[T](
+    queue: asyncio.Queue[T],
     timeout: float,
     disconnected: asyncio.Event | None,
-) -> _T:
+) -> T:
     """Wait for the next item from `queue`, aborting immediately on disconnect."""
     if disconnected is None:
         return await asyncio.wait_for(queue.get(), timeout=timeout)
     if disconnected.is_set():
         raise PowerNIDisconnectedError("BLE connection dropped during meter read")
 
-    get_task: asyncio.Task[_T] = asyncio.create_task(queue.get())
+    get_task: asyncio.Task[T] = asyncio.create_task(queue.get())
     disc_task: asyncio.Task[bool] = asyncio.create_task(disconnected.wait())
     try:
         done, pending = await asyncio.wait(
@@ -325,7 +323,7 @@ async def _wait_queue_or_disconnect(
             return get_task.result()
         if disc_task in done:
             raise PowerNIDisconnectedError("BLE connection dropped during meter read")
-        raise asyncio.TimeoutError
+        raise TimeoutError
     except BaseException:
         for task in (get_task, disc_task):
             if not task.done():
@@ -348,7 +346,7 @@ async def _wait_control_frame(
             return False
         try:
             frame = await _wait_queue_or_disconnect(ctrl_queue, remaining, disconnected)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         if frame == expected:
             return True
@@ -373,7 +371,7 @@ async def _wait_matching_line(
             raise _LineTimeoutError(seen_lines)
         try:
             line = await _wait_queue_or_disconnect(line_queue, remaining, disconnected)
-        except asyncio.TimeoutError as err:
+        except TimeoutError as err:
             raise _LineTimeoutError(seen_lines) from err
 
         seen_lines.append(line)
@@ -599,7 +597,7 @@ async def async_read_meter(
                 ignore_reset=False,
                 disconnected=disconnected,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.debug("Display reset ACK timed out; continuing")
 
     logger.info("Starting Power NI BLE poll")
@@ -631,7 +629,7 @@ async def async_read_meter(
                     LINE_TIMEOUT,
                     disconnected=disconnected,
                 )
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 logger.warning(
                     "Timed out reading balance/days remaining (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
@@ -665,7 +663,7 @@ async def async_read_meter(
                 )
                 assert match is not None
                 data.current_load_kw = float(match.group(1))
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 logger.warning(
                     "Timed out reading current kW load (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
@@ -678,7 +676,7 @@ async def async_read_meter(
                 )
                 assert match is not None
                 data.current_cost_per_hour = float(match.group(1))
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 logger.warning(
                     "Timed out reading current hourly cost (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
@@ -707,7 +705,7 @@ async def async_read_meter(
                 )
                 assert match is not None
                 data.total_import_kwh = int(match.group(1))
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 logger.warning(
                     "Timed out reading total import kWh units (seen_lines=%r)",
                     getattr(err, "seen_lines", []),
@@ -730,7 +728,7 @@ async def async_read_meter(
                     line, _ = await _wait_matching_line(
                         line_queue, None, LINE_TIMEOUT, disconnected=disconnected
                     )
-                except asyncio.TimeoutError as err:
+                except TimeoutError as err:
                     logger.warning(
                         "Timed out reading recent usage line (seen_lines=%r)",
                         getattr(err, "seen_lines", []),
@@ -836,7 +834,7 @@ async def async_read_survey(
         if disconnected is None:
             try:
                 await asyncio.wait_for(ack_event.wait(), timeout=SURVEY_ACK_TIMEOUT)
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 raise PowerNIProtocolError(
                     f"Timed out waiting for survey acknowledgement (0xFC); raw_notifies={raw_notifies}"
                 ) from err
@@ -901,7 +899,7 @@ async def async_read_survey(
                 item = await _wait_queue_or_disconnect(
                     event_queue, LINE_TIMEOUT, disconnected
                 )
-            except asyncio.TimeoutError as err:
+            except TimeoutError as err:
                 if assembler.pending_bytes != 0:
                     raise _survey_timeout_error() from err
                 logger.info(
@@ -913,7 +911,7 @@ async def async_read_survey(
                     item = await _wait_queue_or_disconnect(
                         event_queue, LINE_TIMEOUT, disconnected
                     )
-                except asyncio.TimeoutError as retry_err:
+                except TimeoutError as retry_err:
                     raise _survey_timeout_error() from retry_err
 
             if item is None:

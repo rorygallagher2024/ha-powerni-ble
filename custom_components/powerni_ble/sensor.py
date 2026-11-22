@@ -61,7 +61,7 @@ class PowerNISensorEntityDescription(SensorEntityDescription):
 SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
     PowerNISensorEntityDescription(
         key="balance",
-        name="Balance",
+        translation_key="balance",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         state_class=SensorStateClass.TOTAL,
@@ -71,7 +71,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
     ),
     PowerNISensorEntityDescription(
         key="days_left",
-        name="Days left",
+        translation_key="days_left",
         device_class=None,
         native_unit_of_measurement=UnitOfTime.DAYS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -85,7 +85,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
     ),
     PowerNISensorEntityDescription(
         key="current_load_kw",
-        name="Current load",
+        translation_key="current_load",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -94,7 +94,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
     ),
     PowerNISensorEntityDescription(
         key="current_cost_per_hour",
-        name="Current cost rate",
+        translation_key="current_cost_rate",
         device_class=None,
         native_unit_of_measurement="GBP/h",
         state_class=SensorStateClass.MEASUREMENT,
@@ -104,7 +104,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
     ),
     PowerNISensorEntityDescription(
         key="total_import_kwh",
-        name="Total import energy",
+        translation_key="total_import_energy",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -112,7 +112,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
     ),
     PowerNISensorEntityDescription(
         key="yesterday_cost",
-        name="Yesterday's spend",
+        translation_key="yesterday_spend",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         state_class=SensorStateClass.TOTAL,
@@ -122,7 +122,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
     ),
     PowerNISensorEntityDescription(
         key="last_7_days_cost",
-        name="Last 7 days spend",
+        translation_key="last_7_days_spend",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         state_class=SensorStateClass.TOTAL,
@@ -132,7 +132,7 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
     ),
     PowerNISensorEntityDescription(
         key="last_month_cost",
-        name="Last month spend",
+        translation_key="last_month_spend",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         state_class=SensorStateClass.TOTAL,
@@ -242,7 +242,7 @@ STATUS_SENSORS: tuple[PowerNIStatusSensorEntityDescription, ...] = (
     ),
     PowerNIStatusSensorEntityDescription(
         key="last_successful_read",
-        name="Last successful read",
+        translation_key="last_successful_read",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:clock-check-outline",
@@ -250,7 +250,7 @@ STATUS_SENSORS: tuple[PowerNIStatusSensorEntityDescription, ...] = (
     ),
     PowerNIStatusSensorEntityDescription(
         key="last_top_up",
-        name="Last top-up",
+        translation_key="last_top_up",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="GBP",
         suggested_display_precision=2,
@@ -267,14 +267,14 @@ STATUS_SENSORS: tuple[PowerNIStatusSensorEntityDescription, ...] = (
     ),
     PowerNIStatusSensorEntityDescription(
         key="last_top_up_time",
-        name="Last top-up time",
+        translation_key="last_top_up_time",
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:cash-clock",
         value_fn=lambda c: c.last_top_up.at if c.last_top_up else None,
     ),
     PowerNIStatusSensorEntityDescription(
         key="signal_strength",
-        name="Signal strength",
+        translation_key="signal_strength",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
         state_class=SensorStateClass.MEASUREMENT,
