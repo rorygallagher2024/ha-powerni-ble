@@ -123,8 +123,25 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         if clamped == self.scan_interval_minutes and self.update_interval == interval:
             return False
 
-        self.scan_interval_minutes = clamp_scan_interval(minutes)
+        self.scan_interval_minutes = clamped
         self.update_interval = interval
+        now = dt_util.now()
+        max_age = stale_after(clamped)
+        self._stale_notified = {
+            field
+            for field, ts in self.field_read_at.items()
+            if is_stale(ts, now, max_age)
+        }
+        if self._listeners:
+            self._schedule_refresh()
+        self.async_update_listeners()
+        _LOGGER.debug(
+            "Updated poll interval for %s (%s) to %d min",
+            self.device_name,
+            self.address,
+            clamped,
+        )
+        return True
 
     @property
     def is_polling(self) -> bool:
@@ -160,23 +177,6 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             self._stale_notified.discard("days_left")
         self.data, _ = merge_meter_data(partial, self.data)
         self.async_update_listeners()
-        now = dt_util.now()
-        max_age = stale_after(clamped)
-        self._stale_notified = {
-            field
-            for field, ts in self.field_read_at.items()
-            if is_stale(ts, now, max_age)
-        }
-        if self._listeners:
-            self._schedule_refresh()
-        self.async_update_listeners()
-        _LOGGER.debug(
-            "Updated poll interval for %s (%s) to %d min",
-            self.device_name,
-            self.address,
-            clamped,
-        )
-        return True
 
     async def async_apply_options(self) -> None:
         """Apply updated config entry options in-place."""
@@ -377,6 +377,10 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             raise
         except asyncio.CancelledError:
             self.poll_status = POLL_STATUS_IDLE
+            raise
+        except Exception as err:
+            self._record_result(False)
+            self._set_poll_status(POLL_STATUS_ERROR, error=str(err))
             raise
         self._record_result(True)
         self._force_full_read = False
