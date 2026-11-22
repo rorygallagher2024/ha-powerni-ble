@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.powerni_ble.const import (
+    CONF_AUTO_SYNC_HISTORY,
     CONF_PROXY_SOURCE,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_MINUTES,
@@ -212,6 +213,7 @@ async def test_options_flow_lists_scanners_and_saves(hass: HomeAssistant) -> Non
             user_input={
                 CONF_SCAN_INTERVAL: 5,
                 CONF_PROXY_SOURCE: TEST_PROXY_SOURCE,
+                CONF_AUTO_SYNC_HISTORY: False,
             },
         )
 
@@ -219,4 +221,5 @@ async def test_options_flow_lists_scanners_and_saves(hass: HomeAssistant) -> Non
     assert result2["data"] == {
         CONF_SCAN_INTERVAL: 5,
         CONF_PROXY_SOURCE: TEST_PROXY_SOURCE,
+        CONF_AUTO_SYNC_HISTORY: False,
     }

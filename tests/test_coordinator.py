@@ -8,9 +8,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from bleak.exc import BleakCharacteristicNotFoundError
+from bleak.exc import BleakCharacteristicNotFoundError, BleakError
 from homeassistant.components.recorder.statistics import StatisticMeanType
 from homeassistant.core import Event, HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -21,6 +22,8 @@ from custom_components.powerni_ble.client import (
 )
 from custom_components.powerni_ble.const import (
     ADVERTISEMENT_SILENT_SECONDS,
+    CONF_AUTO_SYNC_HISTORY,
+    DOMAIN,
     FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS,
     POLL_STATUS_ERROR,
     POLL_STATUS_IDLE,
@@ -451,3 +454,165 @@ def test_section_tracking_helpers() -> None:
     coord._mark_sections_read(make_sample_meter_data(), ts)
     assert coord._section_last_read[SECTION_UNITS] == ts
     assert coord._section_last_read[SECTION_SPEND] == ts
+
+
+async def test_auto_sticky_proxy_and_pairing_repair_lifecycle(
+    hass: HomeAssistant,
+) -> None:
+    """Automatic mode remembers the working proxy, raises Repairs on auth fail, and self-clears."""
+    coord = _make_coordinator(hass)
+    scanner_bonded = make_scanner_device(
+        scanner_name="bonded-proxy", source=TEST_PROXY_SOURCE, rssi=-78
+    )
+    scanner_other = make_scanner_device(
+        scanner_name="unbonded-proxy", source=TEST_PROXY_SOURCE_2, rssi=-62
+    )
+    sample = make_sample_meter_data()
+
+    # 1. Successful poll in Automatic mode remembers proxy source in Store and clears issues.
+    with (
+        patch.object(
+            coord_mod.bluetooth,
+            "async_ble_device_from_address",
+            return_value=scanner_bonded.ble_device,
+        ),
+        patch.object(
+            coord_mod,
+            "establish_connection",
+            AsyncMock(return_value=_mock_client()),
+        ),
+        patch.object(coord_mod, "async_read_meter", AsyncMock(return_value=sample)),
+        patch.object(coord_mod, "STORE_SAVE_DELAY_SECONDS", 0),
+    ):
+        await coord._async_poll(frozenset())
+        await coord._store.async_save(coord._stored_state())
+
+    assert coord._preferred_proxy_source == TEST_PROXY_SOURCE
+
+    # Reloaded coordinator restores sticky proxy and prefers it even when another proxy is stronger.
+    reloaded = PowerNIDataUpdateCoordinator(
+        hass, coord.config_entry, TEST_ADDRESS, TEST_NAME
+    )
+    await reloaded.async_load_stored_state()
+    assert reloaded._preferred_proxy_source == TEST_PROXY_SOURCE
+
+    with patch.object(
+        coord_mod.bluetooth,
+        "async_scanner_devices_by_address",
+        return_value=[scanner_other, scanner_bonded],
+    ):
+        chosen = reloaded._get_ble_device()
+    assert chosen is scanner_bonded.ble_device
+
+    # If the preferred proxy disappears from range, Automatic mode falls back.
+    fallback_dev = make_ble_device()
+    with (
+        patch.object(
+            coord_mod.bluetooth,
+            "async_scanner_devices_by_address",
+            return_value=[scanner_other],
+        ),
+        patch.object(
+            coord_mod.bluetooth,
+            "async_ble_device_from_address",
+            return_value=fallback_dev,
+        ),
+    ):
+        assert reloaded._get_ble_device() is fallback_dev
+
+    # 2. Non-auth BleakError must NOT create a pairing Repair issue.
+    with (
+        patch.object(
+            coord_mod.bluetooth,
+            "async_scanner_devices_by_address",
+            return_value=[scanner_bonded],
+        ),
+        patch.object(
+            coord_mod,
+            "establish_connection",
+            AsyncMock(side_effect=BleakError("Connection slot exhausted")),
+        ),
+        pytest.raises(UpdateFailed),
+    ):
+        await reloaded._async_poll(frozenset())
+
+    issue_reg = ir.async_get(hass)
+    assert issue_reg.async_get_issue(DOMAIN, reloaded.pairing_issue_id) is None
+    assert reloaded._preferred_proxy_source == TEST_PROXY_SOURCE
+
+    # 3. Auth/pairing error creates actionable Repair issue and clears sticky preference.
+    with (
+        patch.object(
+            coord_mod.bluetooth,
+            "async_scanner_devices_by_address",
+            return_value=[scanner_bonded],
+        ),
+        patch.object(
+            coord_mod,
+            "establish_connection",
+            AsyncMock(side_effect=BleakError("Insufficient authorization (8)")),
+        ),
+        patch.object(coord_mod, "STORE_SAVE_DELAY_SECONDS", 0),
+        pytest.raises(UpdateFailed),
+    ):
+        await reloaded._async_poll(frozenset())
+
+    issue = issue_reg.async_get_issue(DOMAIN, reloaded.pairing_issue_id)
+    assert issue is not None
+    assert issue.translation_key == "pairing_required"
+    assert issue.translation_placeholders is not None
+    assert issue.translation_placeholders["name"] == TEST_NAME
+    assert issue.translation_placeholders["address"] == TEST_ADDRESS
+    assert "bonded-proxy" in issue.translation_placeholders["proxy"]
+    assert reloaded._preferred_proxy_source is None
+
+    # 4. Next successful poll deletes the Repair issue automatically.
+    with (
+        patch.object(
+            coord_mod.bluetooth,
+            "async_ble_device_from_address",
+            return_value=scanner_bonded.ble_device,
+        ),
+        patch.object(
+            coord_mod,
+            "establish_connection",
+            AsyncMock(return_value=_mock_client()),
+        ),
+        patch.object(coord_mod, "async_read_meter", AsyncMock(return_value=sample)),
+        patch.object(coord_mod, "STORE_SAVE_DELAY_SECONDS", 0),
+    ):
+        await reloaded._async_poll(frozenset())
+
+    assert issue_reg.async_get_issue(DOMAIN, reloaded.pairing_issue_id) is None
+
+
+async def test_auto_sync_history_option_controls_background_task(
+    hass: HomeAssistant,
+) -> None:
+    """Disabling auto_sync_history prevents scheduling and cancels active background tasks."""
+    coord = _make_coordinator(hass, options={CONF_AUTO_SYNC_HISTORY: False})
+    assert coord.auto_sync_history is False
+    hass.config.components.add("recorder")
+    try:
+        coord._maybe_schedule_survey_sync(datetime(2026, 11, 22, 12, 0, tzinfo=UTC))
+        assert coord._survey_task is None
+
+        # Enable via options -> now schedules when due; turning off cancels running task.
+        hass.config_entries.async_update_entry(
+            coord.config_entry, options={CONF_AUTO_SYNC_HISTORY: True}
+        )
+        await coord.async_apply_options()
+        assert coord.auto_sync_history is True
+
+        fake_task = MagicMock()
+        fake_task.done.return_value = False
+        coord._survey_task = fake_task
+
+        hass.config_entries.async_update_entry(
+            coord.config_entry, options={CONF_AUTO_SYNC_HISTORY: False}
+        )
+        await coord.async_apply_options()
+        assert coord.auto_sync_history is False
+        fake_task.cancel.assert_called_once()
+    finally:
+        hass.config.components.remove("recorder")

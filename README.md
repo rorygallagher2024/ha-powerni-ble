@@ -156,7 +156,8 @@ Requires **Home Assistant `2026.10.0` or newer**.
    - Or click **+ Add integration**, search for **Power NI Keypad+ BLE**, and pick your meter (or choose **Enter MAC address manually**).
 2. Click **Configure** on the integration entry at any time to adjust:
    - **Poll interval (minutes):** `1` to `1440` minutes (default `15`).
-   - **Bluetooth proxy / adapter:** Leave **Automatic** if only one adapter sees the meter, or pin to the bonded proxy when multiple proxies are in range.
+   - **Bluetooth proxy / adapter:** Leave **Automatic** to remember and reuse the last working bonded proxy automatically (falling back if offline), or pin a specific bonded proxy when multiple proxies are in range.
+   - **Automatically sync 14-day energy history (every 6 hours):** Disable if you only want manual **Sync energy history** imports (useful when dedicated CT clamps or solar inverters already feed your Energy dashboard).
 
 <p align="center">
   <img src="docs/images/configure-dialog.png" alt="Power NI Keypad+ BLE options dialog" width="400" />
@@ -233,7 +234,7 @@ actions:
 The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 
 - **`Total import energy` sensor** (`kWh`, integer precision): updates on live polls as whole kilowatt-hours tick up.
-- **`Energy history` external statistic** (`powerni_ble:<mac>_energy_history`, `0.00625 kWh` counter resolution): backfills up to 14 days of completed hourly energy totals from the meter's 30-minute internal survey (`0xA0`) and fills any gaps if Home Assistant was offline. Press **Sync energy history** at any time to run a full 14-day import immediately.
+- **`Energy history` external statistic** (`powerni_ble:<mac>_energy_history`, `0.00625 kWh` counter resolution): backfills up to 14 days of completed hourly energy totals from the meter's 30-minute internal survey (`0xA0`) into an isolated external statistic without altering any existing Energy dashboard sensors or sources. Disable **Automatically sync 14-day energy history** in **Configure** if you prefer manual-only imports via the **Sync energy history** button.
 
 1. Open **Settings → Dashboards → Energy**.
 2. Choose the section matching your setup:
@@ -272,8 +273,10 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 
 ### `Insufficient authorization (8)` or `Pairing failed due to error: 102`
 
-- **`Insufficient authorization (8)`:** The adapter or proxy Home Assistant selected does not hold a valid 6-digit PIN bond. Complete the [One-Time 6-Digit PIN Pairing](#prerequisites-one-time-6-digit-pin-pairing) steps on that proxy and pin **Bluetooth proxy / adapter** in **Configure** so Home Assistant does not roam onto an unbonded proxy.
+- Home Assistant automatically raises a **Repair** notification under **Settings → System → Repairs** naming the unbonded adapter or proxy if an authentication or pairing error occurs, and clears it once a poll succeeds.
+- **`Insufficient authorization (8)`:** The adapter or proxy Home Assistant selected does not hold a valid 6-digit PIN bond. Complete the [One-Time 6-Digit PIN Pairing](#prerequisites-one-time-6-digit-pin-pairing) steps on that proxy and pin **Bluetooth proxy / adapter** in **Configure** if needed.
 - **`error: 102` (`ESP_AUTH_SMP_CONN_TOUT`):** During ESPHome pairing, the 6-digit PIN was not entered as `NNNNNN#` on the Freedom Unit keypad before the ~30-second SMP timeout. Enter `*159268#` (or `*0#`) on the keypad and retry while watching logs.
+- Use **Download diagnostics** on the integration entry (**⋮ → Download diagnostics**) for a redacted JSON snapshot of coordinator state, poll status, and visible Bluetooth proxies when filing an issue.
 
 ### Brand icon shows "icon not available"
 
@@ -281,8 +284,7 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 
 ## Future Roadmap
 
-- **Actionable pairing diagnostics & HA Repairs:** Raise clear Repair issues when an unbonded proxy hits `Insufficient authorization (8)`, identifying the proxy that needs bonding.
-- **Automatic bonded-proxy detection & stickiness:** Remember which proxy succeeds and prefer it automatically without manual pinning.
+- **Faster balance-only polling mode:** Optional toggle or automatic skipping of disabled sensor sections (`Current load`, `Total import energy`, spend history) so owners who only want **Balance** get ~6–8 second polls.
 - **Zero-CLI ESPHome pairing helper:** Expose the passkey and pairing status via ESPHome `text_sensor` / `button` entities directly in Home Assistant.
 - **12-month historical spend (`JAN`–`DEC`) & meter serial (`0x80`):** Parse the remaining monthly spend frames from `0xC2 0x32` and binary serial/diagnostics frames from `0x80`.
 - **Notification Blueprint:** Pre-built Blueprint for low-credit, low-days-remaining, and top-up notifications.

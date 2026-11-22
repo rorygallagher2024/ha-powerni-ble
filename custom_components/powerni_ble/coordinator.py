@@ -29,6 +29,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -43,11 +44,14 @@ from .client import (
 )
 from .const import (
     ADVERTISEMENT_SILENT_SECONDS,
+    CONF_AUTO_SYNC_HISTORY,
     CONF_PROXY_SOURCE,
     CONF_SCAN_INTERVAL,
+    DEFAULT_AUTO_SYNC_HISTORY,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
     FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS,
+    PAIRING_LEARN_MORE_URL,
     POLL_STATUS_CONNECTING,
     POLL_STATUS_ERROR,
     POLL_STATUS_IDLE,
@@ -73,6 +77,7 @@ from .survey import aggregate_hourly, parse_survey_blocks
 from .tracking import (
     detect_top_up,
     fresh_fields,
+    is_auth_or_pairing_error,
     is_stale,
     record_read_times,
     stale_after,
@@ -86,6 +91,25 @@ STORE_SAVE_DELAY_SECONDS = 10
 RSSI_PUBLISH_THRESHOLD_DBM = 3
 SURVEY_BACKGROUND_DELAY_SECONDS = 1.0
 SURVEY_FAILURE_COOLDOWN = timedelta(minutes=30)
+
+
+def pairing_issue_id_for_address(address: str) -> str:
+    """Return the repair issue id used for a meter MAC address."""
+    return f"pairing_required_{address.lower().replace(':', '_')}"
+
+
+def _extract_ble_device_source(ble_device: BLEDevice) -> str | None:
+    """Return the scanner/adapter source reported on a BLEDevice, if available."""
+    details = getattr(ble_device, "details", None)
+    raw = (
+        details.get("source")
+        if isinstance(details, dict)
+        else getattr(details, "source", None)
+    )
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        return stripped or None
+    return None
 
 
 @dataclass(frozen=True)
@@ -115,6 +139,10 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         self.proxy_source: str = (
             config_entry.options.get(CONF_PROXY_SOURCE) or ""
         ).strip()
+        self.auto_sync_history: bool = bool(
+            config_entry.options.get(CONF_AUTO_SYNC_HISTORY, DEFAULT_AUTO_SYNC_HISTORY)
+        )
+        self._preferred_proxy_source: str | None = None
         self.scan_interval_minutes = clamp_scan_interval(
             config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_MINUTES)
         )
@@ -179,6 +207,11 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             clamped,
         )
         return True
+
+    @property
+    def pairing_issue_id(self) -> str:
+        """Return the Home Assistant Repair issue id for this meter."""
+        return pairing_issue_id_for_address(self.address)
 
     @property
     def rssi(self) -> int | None:
@@ -319,6 +352,15 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_MINUTES)
             )
         )
+        self.auto_sync_history = bool(
+            options.get(CONF_AUTO_SYNC_HISTORY, DEFAULT_AUTO_SYNC_HISTORY)
+        )
+        if (
+            not self.auto_sync_history
+            and self._survey_task is not None
+            and not self._survey_task.done()
+        ):
+            self._survey_task.cancel()
         new_proxy = (options.get(CONF_PROXY_SOURCE) or "").strip()
         if new_proxy != self.proxy_source:
             self.proxy_source = new_proxy
@@ -404,10 +446,14 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             self._section_last_read[SECTION_SPEND] = now
 
     async def async_load_stored_state(self) -> None:
-        """Restore the top-up baseline and last top-up from storage."""
+        """Restore persistent top-up and bonded-proxy state from storage."""
         stored = await self._store.async_load() or {}
         balance = stored.get("last_balance")
         self._top_up_baseline = float(balance) if balance is not None else None
+        preferred = stored.get("preferred_proxy_source")
+        self._preferred_proxy_source = (
+            str(preferred).strip() or None if preferred else None
+        )
         last_top_up = stored.get("last_top_up")
         if last_top_up:
             at = dt_util.parse_datetime(last_top_up.get("at") or "")
@@ -429,7 +475,11 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 "balance_before": self.last_top_up.balance_before,
                 "balance_after": self.last_top_up.balance_after,
             }
-        return {"last_balance": self._top_up_baseline, "last_top_up": last_top_up}
+        return {
+            "last_balance": self._top_up_baseline,
+            "last_top_up": last_top_up,
+            "preferred_proxy_source": self._preferred_proxy_source,
+        }
 
     def _check_top_up(self, balance: float | None, now: datetime) -> None:
         """Fire a top-up event when a freshly read balance rose since the last one.
@@ -483,8 +533,46 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             stale_after(self.scan_interval_minutes),
         )
 
+    def _format_proxy_label(self, source: str | None) -> str:
+        """Return a human-readable adapter or ESPHome proxy label for Repair issues."""
+        if source:
+            target = source.upper()
+            for scanner_dev in bluetooth.async_scanner_devices_by_address(
+                self.hass, self.address, connectable=True
+            ):
+                if scanner_dev.scanner.source.upper() == target:
+                    name = (scanner_dev.scanner.name or "").strip()
+                    if not name:
+                        return source
+                    if target in name.upper():
+                        return name
+                    return f"{name} ({source})"
+            return source
+        return "your Bluetooth adapter / proxy"
+
+    def _raise_pairing_issue(self, source: str | None) -> None:
+        """Create or update an actionable Repair issue when BLE bonding is missing."""
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self.pairing_issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="pairing_required",
+            translation_placeholders={
+                "name": self.device_name,
+                "address": self.address,
+                "proxy": self._format_proxy_label(source),
+            },
+            learn_more_url=PAIRING_LEARN_MORE_URL,
+        )
+
+    def _clear_pairing_issue(self) -> None:
+        """Clear any open pairing Repair issue once an authenticated poll succeeds."""
+        ir.async_delete_issue(self.hass, DOMAIN, self.pairing_issue_id)
+
     def _get_ble_device(self) -> BLEDevice | None:
-        """Resolve the target BLEDevice (optionally pinned to a specific proxy)."""
+        """Resolve the target BLEDevice (pinned, auto-sticky bonded, or strongest)."""
         if self.proxy_source:
             for scanner_dev in bluetooth.async_scanner_devices_by_address(
                 self.hass, self.address, connectable=True
@@ -492,6 +580,13 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                 if scanner_dev.scanner.source.upper() == self.proxy_source.upper():
                     return scanner_dev.ble_device
             return None
+        if self._preferred_proxy_source:
+            preferred = self._preferred_proxy_source.upper()
+            for scanner_dev in bluetooth.async_scanner_devices_by_address(
+                self.hass, self.address, connectable=True
+            ):
+                if scanner_dev.scanner.source.upper() == preferred:
+                    return scanner_dev.ble_device
         return bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )
@@ -570,6 +665,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
 
     def _maybe_schedule_survey_sync(self, now: datetime) -> None:
         """Schedule background 30-min energy history backfill when due."""
+        if not self.auto_sync_history:
+            return
         if "recorder" not in self.hass.config.components:
             return
         if self._survey_task is not None and not self._survey_task.done():
@@ -732,6 +829,9 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             last_err: Exception | None = None
             for attempt in range(1, SESSION_RETRY_ATTEMPTS + 1):
                 ble_device = self._require_ble_device()
+                used_source = _extract_ble_device_source(ble_device) or (
+                    self.proxy_source or None
+                )
 
                 client: BleakClientWithServiceCache | None = None
                 details = getattr(ble_device, "details", None)
@@ -765,13 +865,20 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                         max_attempts=3,
                     )
                     self._set_poll_status(POLL_STATUS_READING)
-                    return await async_read_meter(
+                    data = await async_read_meter(
                         client,
                         _LOGGER,
                         sections,
                         disconnected=disconnected,
                         on_progress=self._handle_partial_progress,
                     )
+                    self._clear_pairing_issue()
+                    if used_source and used_source != self._preferred_proxy_source:
+                        self._preferred_proxy_source = used_source
+                        self._store.async_delay_save(
+                            self._stored_state, STORE_SAVE_DELAY_SECONDS
+                        )
+                    return data
                 except (BleakError, PowerNIProtocolError, TimeoutError) as err:
                     last_err = err
                     if (
@@ -792,6 +899,19 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                     if client is not None and attempt < SESSION_RETRY_ATTEMPTS:
                         should_retry = True
                     else:
+                        if is_auth_or_pairing_error(err):
+                            self._raise_pairing_issue(used_source)
+                            if (
+                                not self.proxy_source
+                                and self._preferred_proxy_source
+                                and used_source
+                                and used_source.upper()
+                                == self._preferred_proxy_source.upper()
+                            ):
+                                self._preferred_proxy_source = None
+                                self._store.async_delay_save(
+                                    self._stored_state, STORE_SAVE_DELAY_SECONDS
+                                )
                         _LOGGER.warning(
                             "Failed reading Power NI meter %s (%s, details=%s): %s",
                             self.device_name,

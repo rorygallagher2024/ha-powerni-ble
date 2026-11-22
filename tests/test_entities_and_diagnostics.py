@@ -8,10 +8,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.const import CONF_ADDRESS, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 
 from custom_components.powerni_ble import coordinator as coord_mod
-from custom_components.powerni_ble.const import CONF_SCAN_INTERVAL, POLL_STATUS_IDLE
-from custom_components.powerni_ble.coordinator import TopUp
+from custom_components.powerni_ble.const import (
+    CONF_SCAN_INTERVAL,
+    DOMAIN,
+    POLL_STATUS_IDLE,
+)
+from custom_components.powerni_ble.coordinator import (
+    TopUp,
+    pairing_issue_id_for_address,
+)
 from custom_components.powerni_ble.diagnostics import (
     async_get_config_entry_diagnostics,
 )
@@ -184,6 +192,7 @@ async def test_diagnostics_redacts_sensitive_fields(
         await hass.async_block_till_done()
 
     coord = entry.runtime_data
+    coord._preferred_proxy_source = TEST_PROXY_SOURCE
     coord.last_top_up = TopUp(
         amount=25.0,
         at=datetime(2026, 11, 22, 9, 0, tzinfo=UTC),
@@ -203,6 +212,8 @@ async def test_diagnostics_redacts_sensitive_fields(
     assert diag["entry"]["options"]["proxy_source"] == "**REDACTED**"
 
     assert diag["coordinator"]["poll_status"] == POLL_STATUS_IDLE
+    assert diag["coordinator"]["auto_sync_history"] is True
+    assert diag["coordinator"]["preferred_proxy_source"] == "**REDACTED**"
     assert diag["coordinator"]["rssi"] == -68
     assert diag["coordinator"]["data"]["balance"] == 24.5
     assert diag["coordinator"]["last_top_up"]["amount"] == 25.0
@@ -212,4 +223,16 @@ async def test_diagnostics_redacts_sensitive_fields(
     assert diag["bluetooth_scanners"][0]["source"] == "**REDACTED**"
     assert diag["bluetooth_scanners"][0]["rssi"] == -68
 
-    assert await hass.config_entries.async_unload(entry.entry_id)
+    # Open repair issues are deleted when the config entry is removed.
+    issue_id = pairing_issue_id_for_address(TEST_ADDRESS)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="pairing_required",
+    )
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None

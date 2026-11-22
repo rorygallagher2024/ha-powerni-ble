@@ -22,8 +22,10 @@ from homeassistant.core import callback
 from homeassistant.helpers.device_registry import format_mac
 
 from .const import (
+    CONF_AUTO_SYNC_HISTORY,
     CONF_PROXY_SOURCE,
     CONF_SCAN_INTERVAL,
+    DEFAULT_AUTO_SYNC_HISTORY,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
     MAX_SCAN_INTERVAL_MINUTES,
@@ -185,6 +187,9 @@ class PowerNIOptionsFlow(OptionsFlow):
                 data={
                     CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
                     CONF_PROXY_SOURCE: user_input.get(CONF_PROXY_SOURCE, ""),
+                    CONF_AUTO_SYNC_HISTORY: bool(
+                        user_input.get(CONF_AUTO_SYNC_HISTORY, DEFAULT_AUTO_SYNC_HISTORY)
+                    ),
                 },
             )
 
@@ -199,6 +204,11 @@ class PowerNIOptionsFlow(OptionsFlow):
             )
         )
         current_proxy = self.config_entry.options.get(CONF_PROXY_SOURCE, "")
+        current_auto_sync = bool(
+            self.config_entry.options.get(
+                CONF_AUTO_SYNC_HISTORY, DEFAULT_AUTO_SYNC_HISTORY
+            )
+        )
 
         scanner_choices: dict[str, str] = {
             "": "Automatic (strongest proxy / adapter)"
@@ -232,6 +242,9 @@ class PowerNIOptionsFlow(OptionsFlow):
                     vol.Optional(CONF_PROXY_SOURCE, default=current_proxy): vol.In(
                         scanner_choices
                     ),
+                    vol.Optional(
+                        CONF_AUTO_SYNC_HISTORY, default=current_auto_sync
+                    ): bool,
                 }
             ),
         )

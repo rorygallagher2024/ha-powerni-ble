@@ -13,7 +13,13 @@ from homeassistant.core import HomeAssistant
 from . import PowerNIConfigEntry
 from .const import CONF_PROXY_SOURCE
 
-TO_REDACT = {CONF_ADDRESS, CONF_PROXY_SOURCE, "unique_id", "source"}
+TO_REDACT = {
+    CONF_ADDRESS,
+    CONF_PROXY_SOURCE,
+    "preferred_proxy_source",
+    "unique_id",
+    "source",
+}
 
 
 async def async_get_config_entry_diagnostics(
@@ -54,6 +60,8 @@ async def async_get_config_entry_diagnostics(
         },
         "coordinator": {
             "scan_interval_minutes": coordinator.scan_interval_minutes,
+            "auto_sync_history": coordinator.auto_sync_history,
+            "preferred_proxy_source": coordinator._preferred_proxy_source,
             "poll_status": coordinator.poll_status,
             "last_error": coordinator.last_error,
             "consecutive_failures": coordinator._consecutive_failures,
