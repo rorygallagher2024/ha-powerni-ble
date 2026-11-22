@@ -1,7 +1,7 @@
 <div align="center">
   <img src="custom_components/powerni_ble/brand/icon.png" alt="Power NI Keypad+ BLE icon" width="96" />
   <h1>Power NI Keypad+ BLE for Home Assistant</h1>
-  <p>Local, read-only Home Assistant integration for Power NI <strong>Keypad+ Freedom Units</strong> over Bluetooth Low Energy.</p>
+  <p>Local, read-only Home Assistant integration for <strong>Power NI (PowerNI) Keypad+</strong> prepay electricity meters (Freedom Units) in Northern Ireland over Bluetooth.</p>
 
   <p>
     <a href="https://github.com/rorygallagher2024/ha-powerni-ble/releases"><img src="https://img.shields.io/github/v/release/rorygallagher2024/ha-powerni-ble?style=flat-square" alt="GitHub Release" /></a>
@@ -29,10 +29,11 @@
 
 ## Highlights
 
-- **100% local & read-only BLE:** Polls your Freedom Unit directly over Bluetooth with zero cloud accounts or scraping.
-- **Live credit, load, spend & top-up tracking:** Exposes remaining `GBP` balance, estimated days left, live `kW` load, hourly cost rate, recent spend, and `powerni_ble_top_up` events with permanent hourly Long-Term Statistics.
-- **Resilient multi-proxy & phone-app coexistence:** Remembers the working bonded proxy automatically, pauses in **`Waiting for meter`** when the mobile app holds the single BLE slot, and raises a Home Assistant **Repair** issue if an unbonded proxy fails authentication.
-- **Optional 14-day energy survey backfill (`0.00625 kWh`):** Imports completed hourly `kWh` buckets into an isolated external statistic (`powerni_ble:<mac>_energy_history`) without altering existing Energy Dashboard sources (with a Configure toggle to run manual-only if you already use CT clamps).
+- **100% local & read-only:** Connects directly to your keypad over Bluetooth — no cloud accounts, logins, or scraping, and it can never change your meter or balance.
+- **Credit and usage at a glance:** See your remaining balance, estimated days left, live electricity draw, and daily, weekly, and monthly spend right in Home Assistant.
+- **Low-credit & top-up notifications:** Automatically spots top-ups and gives you everything you need for low-balance phone alerts.
+- **Plays nicely with the official phone app:** Automatically pauses while you're using the Power NI app and catches up as soon as you close it.
+- **Optional Energy Dashboard history:** Can pull up to 14 days of hourly electricity usage straight from your meter — kept separate from any existing solar or CT-clamp sensors, and easy to switch to manual-only.
 
 <p align="center">
   <img src="docs/images/device-page.png" alt="Power NI Keypad+ BLE device page in Home Assistant" width="520" />
