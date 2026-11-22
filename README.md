@@ -48,7 +48,7 @@
 | **Last top-up time** | Sensor | Timestamp when the last top-up was detected | — | `timestamp` |
 | **Last successful read** | Diagnostic | Timestamp of the most recent successful BLE poll | — | `timestamp` |
 | **Poll status** | Diagnostic | Live BLE poll state (`idle`, `connecting`, `reading`, `retrying`, `waiting`, `error`) | — | `enum` |
-| **Signal strength** | Diagnostic | Latest observed Bluetooth RSSI from the selected adapter or proxy | `dBm` | `signal_strength` / `measurement` |
+| **Signal strength** | Diagnostic | Smoothed Bluetooth RSSI (rolling median) from the selected adapter or proxy | `dBm` | `signal_strength` / `measurement` |
 | **Updating** | Diagnostic | `on` while connecting, reading, or retrying a BLE poll | — | `binary_sensor` (`running`) |
 | **Refresh** | Control | Button triggering an immediate full BLE read across all sections | — | `button` |
 | **Sync energy history** | Configuration | Button importing up to 14 days of 30-minute meter history (`0xA0`) | — | `button` |
@@ -76,6 +76,11 @@ The Freedom Unit only allows one Bluetooth connection at a time. To keep BLE ses
 - **Age-based availability:** Every meter reading sensor carries a `last_read` ISO timestamp attribute showing when that field was actually returned by the meter, and stays available across brief BLE interruptions until older than `max(24 hours, 3 × poll_interval)`.
 
 ## Compatibility
+
+### Home Assistant Version
+
+- **Requires Home Assistant `2026.10.0` or newer** (uses `bluetooth.async_register_advertisement_callback` for raw per-address advertisement callbacks in broadcast-aware polling and modern recorder external statistics metadata).
+- Tested live on **Home Assistant `2026.11.1`**.
 
 ### Freedom Unit Hardware
 
@@ -130,6 +135,8 @@ Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 
 > If your Freedom Unit ignores pairing or stops advertising, reset its internal Bluetooth radio from the keypad by entering **`*159268#`** (`B#######` units) or **`*0#`** (`PNI#####` units).
 
 ## Installation
+
+Requires **Home Assistant `2026.10.0` or newer**.
 
 ### HACS (Custom Repository)
 
