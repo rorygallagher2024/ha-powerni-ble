@@ -9,6 +9,9 @@
       "local_name": "PNI[0-9][0-9][0-9][0-9][0-9]"
     }
   ],
+  "categories": [
+    "energy.meters_monitoring"
+  ],
   "codeowners": [
     "@rorygallagher2024"
   ],
