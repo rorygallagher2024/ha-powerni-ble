@@ -315,13 +315,6 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 
 - Local integration brand icons (`custom_components/powerni_ble/brand/`) are served by Home Assistant 2026.x+. Restart Home Assistant after installing and hard-refresh your browser (`Cmd+Shift+R` / `Ctrl+Shift+R`).
 
-## Future Roadmap
-
-- **Faster balance-only polling mode:** Optional toggle or automatic skipping of disabled sensor sections (`Current load`, `Total import energy`, spend history) so owners who only want **Balance** get ~6–8 second polls.
-- **Zero-CLI ESPHome pairing helper:** Expose the passkey and pairing status via ESPHome `text_sensor` / `button` entities directly in Home Assistant.
-- **12-month historical spend (`JAN`–`DEC`) & meter serial (`0x80`):** Parse the remaining monthly spend frames from `0xC2 0x32` and binary serial/diagnostics frames from `0x80`.
-- **Notification Blueprint:** Pre-built Blueprint for low-credit, low-days-remaining, and top-up notifications.
-
 ## Support & Development
 
 - **Reporting issues:** Download a redacted diagnostics bundle via **Settings → Devices & services → Power NI Keypad+ BLE → `⋮` → Download diagnostics** (Bluetooth MAC addresses, unique IDs, and proxy sources are automatically redacted) and attach it to a [GitHub Issue](https://github.com/rorygallagher2024/ha-powerni-ble/issues).
