@@ -29,11 +29,11 @@
 
 ## Highlights
 
-- **100% local & read-only:** Connects directly to your keypad over Bluetooth — no cloud accounts, logins, or scraping, and it can never change your meter or balance.
+- **100% local & read-only:** Connects directly to your keypad over Bluetooth. No cloud accounts, logins, or scraping, and it can never change your meter or balance.
 - **Credit and usage at a glance:** See your remaining balance, estimated days left, live electricity draw, and daily, weekly, and monthly spend right in Home Assistant.
 - **Low-credit & top-up notifications:** Automatically spots top-ups and gives you everything you need for low-balance phone alerts.
 - **Plays nicely with the official phone app:** Automatically pauses while you're using the Power NI app and catches up as soon as you close it.
-- **Optional Energy Dashboard history:** Can pull up to 14 days of hourly electricity usage straight from your meter — kept separate from any existing solar or CT-clamp sensors, and easy to switch to manual-only.
+- **Optional Energy Dashboard history:** Can pull up to 14 days of hourly electricity usage straight from your meter.
 
 <p align="center">
   <img src="docs/images/device-page.png" alt="Power NI Keypad+ BLE device page in Home Assistant" width="520" />
