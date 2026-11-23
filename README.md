@@ -36,9 +36,9 @@
 - **Optional Energy Dashboard history:** Can pull up to 14 days of hourly electricity usage straight from your meter.
 
 <p align="center">
-  <img src="docs/images/device-page.png" alt="Power NI Keypad+ BLE device page in Home Assistant" width="520" />
+  <img src="docs/images/dashboard.png" alt="Example Home Assistant dashboard for Power NI Keypad+ BLE" width="820" />
   <br />
-  <em>Home Assistant device page showing live telemetry, Refresh control, and configurable Poll interval.</em>
+  <em>Example Home Assistant dashboard showing 7-day credit balance, live load, 14-day meter energy history, and Bluetooth diagnostics.</em>
 </p>
 
 ## Exposed Entities
@@ -62,6 +62,12 @@
 | **Refresh** | Control | Button triggering an immediate full BLE read across all sections | — | `button` |
 | **Sync energy history** | Configuration | Button importing up to 14 days of 30-minute meter history (`0xA0`) | — | `button` |
 | **Poll interval** | Configuration | Adjustable polling interval synced with **Configure** (`1`–`1440` min) | `min` | `number` (`duration`) |
+
+<p align="center">
+  <img src="docs/images/device-page.png" alt="Power NI Keypad+ BLE device page in Home Assistant" width="520" />
+  <br />
+  <em>Home Assistant device page showing live telemetry, Refresh control, and configurable Poll interval.</em>
+</p>
 
 ## How Polling Works
 
@@ -190,8 +196,12 @@ mode: single
 triggers:
   - trigger: homeassistant
     event: start
-  - trigger: state
-    entity_id: group.household
+  - trigger: numeric_state
+    entity_id: zone.home
+    above: 0
+  - trigger: numeric_state
+    entity_id: zone.home
+    below: 1
   - trigger: time
     at:
       - "07:00:00"
@@ -203,7 +213,7 @@ actions:
     data:
       value: >
         {% set daytime = 7 <= now().hour < 23 %}
-        {% set someone_home = is_state('group.household', 'home') %}
+        {% set someone_home = states('zone.home') | int(0) > 0 %}
         {{ 2 if (daytime and someone_home) else 30 }}
 ```
 
