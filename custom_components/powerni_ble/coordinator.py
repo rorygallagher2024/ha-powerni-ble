@@ -44,6 +44,7 @@ from .client import (
 )
 from .const import (
     ADVERTISEMENT_SILENT_SECONDS,
+    ADVERTISEMENT_WAITING_TIMEOUT_SECONDS,
     CONF_AUTO_SYNC_HISTORY,
     CONF_PROXY_SOURCE,
     CONF_SCAN_INTERVAL,
@@ -219,6 +220,13 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         return round(median(self._rssi_samples)) if self._rssi_samples else None
 
     @property
+    def seconds_since_last_advertisement(self) -> float | None:
+        """Return seconds elapsed since the last connectable advertisement."""
+        if self._last_adv_monotonic is None:
+            return None
+        return round(max(0.0, time.monotonic() - self._last_adv_monotonic), 1)
+
+    @property
     def is_polling(self) -> bool:
         """Return True while a BLE poll or in-poll retry is active."""
         return self.poll_status in (
@@ -269,6 +277,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
 
         if self._poll_deferred and not self.is_polling:
             self._poll_deferred = False
+            self.update_interval = self._next_interval()
             _LOGGER.debug(
                 "Power NI meter %s advertisements resumed; triggering catch-up poll",
                 self.address,
@@ -594,22 +603,48 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
     async def _async_update_data(self) -> PowerNIMeterData:
         """Poll the meter, keeping last-known values for fields a read missed."""
         now = dt_util.now()
+        silent_for = (
+            time.monotonic() - self._last_adv_monotonic
+            if self._last_adv_monotonic is not None
+            else None
+        )
         if (
             not self._force_full_read
             and self.data is not None
-            and self._last_adv_monotonic is not None
-            and (time.monotonic() - self._last_adv_monotonic)
-            > ADVERTISEMENT_SILENT_SECONDS
+            and silent_for is not None
+            and ADVERTISEMENT_SILENT_SECONDS
+            < silent_for
+            < ADVERTISEMENT_WAITING_TIMEOUT_SECONDS
         ):
             self._poll_deferred = True
             self._check_and_notify_stale(now)
             self._set_poll_status(POLL_STATUS_WAITING)
+            remaining = max(60.0, ADVERTISEMENT_WAITING_TIMEOUT_SECONDS - silent_for)
+            self.update_interval = min(
+                self._next_interval(), timedelta(seconds=remaining)
+            )
             _LOGGER.debug(
-                "Deferring poll for %s: no connectable advertisement for %.0fs",
+                "Deferring poll for %s: no connectable advertisement for %.0fs "
+                "(re-checking in %.0fs)",
                 self.address,
-                time.monotonic() - self._last_adv_monotonic,
+                silent_for,
+                self.update_interval.total_seconds(),
             )
             return self.data
+
+        if (
+            not self._force_full_read
+            and silent_for is not None
+            and silent_for >= ADVERTISEMENT_WAITING_TIMEOUT_SECONDS
+            and (self._poll_deferred or self.poll_status == POLL_STATUS_WAITING)
+        ):
+            _LOGGER.warning(
+                "Power NI meter %s (%s) has not advertised for %.0f min; "
+                "probing instead of waiting",
+                self.device_name,
+                self.address,
+                silent_for / 60.0,
+            )
 
         self._poll_deferred = False
         sections = sections_due(

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
+import re
+from collections.abc import Iterable
 from typing import Any
 
 from homeassistant.components import bluetooth
-from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.components.diagnostics import REDACTED, async_redact_data
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import HomeAssistant
 
@@ -22,6 +24,23 @@ TO_REDACT = {
     "unique_id",
     "source",
 }
+
+
+def _redact_error(
+    error: str | None, sensitive_values: Iterable[str | None]
+) -> str | None:
+    """Scrub known sensitive identifiers (MACs, serials, proxy IDs) from error strings."""
+    if not error:
+        return error
+    redacted = error
+    values = sorted(
+        {val.strip() for val in sensitive_values if val and val.strip()},
+        key=len,
+        reverse=True,
+    )
+    for value in values:
+        redacted = re.sub(re.escape(value), REDACTED, redacted, flags=re.IGNORECASE)
+    return redacted
 
 
 async def async_get_config_entry_diagnostics(
@@ -65,9 +84,23 @@ async def async_get_config_entry_diagnostics(
             "auto_sync_history": coordinator.auto_sync_history,
             "preferred_proxy_source": coordinator._preferred_proxy_source,
             "poll_status": coordinator.poll_status,
-            "last_error": coordinator.last_error,
+            "last_error": _redact_error(
+                coordinator.last_error,
+                (
+                    coordinator.address,
+                    coordinator.device_name,
+                    coordinator.proxy_source,
+                    coordinator._preferred_proxy_source,
+                    entry.title,
+                    entry.unique_id,
+                    *(str(s["source"]) for s in scanners if s.get("source")),
+                ),
+            ),
             "consecutive_failures": coordinator._consecutive_failures,
             "poll_deferred": coordinator._poll_deferred,
+            "seconds_since_last_advertisement": (
+                coordinator.seconds_since_last_advertisement
+            ),
             "rssi": coordinator.rssi,
             "last_successful_read": (
                 coordinator.last_successful_read.isoformat()

@@ -46,8 +46,10 @@ SURVEY_SYNC_INTERVAL = timedelta(hours=6)
 
 # Defer scheduled polls when no connectable advertisement has been heard for
 # this long (e.g. while the phone app holds the meter's single BLE link),
-# then catch up as soon as advertisements resume.
+# then catch up as soon as advertisements resume. After the waiting timeout,
+# stop deferring and probe/escalate to error rather than waiting silently.
 ADVERTISEMENT_SILENT_SECONDS = 90.0
+ADVERTISEMENT_WAITING_TIMEOUT_SECONDS = 1800.0
 FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS = 15.0
 RSSI_MIN_PUBLISH_INTERVAL_SECONDS = 60.0
 RSSI_MEDIAN_WINDOW = 15
