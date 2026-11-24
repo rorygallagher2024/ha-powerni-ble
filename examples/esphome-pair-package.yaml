@@ -1,0 +1,117 @@
+# Drop-in ESPHome package for one-time 6-digit PIN bonding of a Power NI
+# Freedom Unit on ANY existing ESPHome Bluetooth Proxy (ESP32 / S3 / C3 /
+# Everything Presence Lite, etc., using the `esp-idf` framework).
+#
+# Usage:
+# 1. Add these lines to your existing ESPHome proxy YAML:
+#
+#    substitutions:
+#      powerni_mac: "AA:BB:CC:DD:EE:FF"   # Your Freedom Unit's Bluetooth MAC
+#      powerni_pin: "123456"              # Any 6-digit PIN you choose
+#
+#    packages:
+#      powerni_pair:
+#        url: https://github.com/rorygallagher2024/ha-powerni-ble
+#        ref: main
+#        files: [examples/esphome-pair-package.yaml]
+#
+# 2. Install (OTA) onto your ESPHome proxy — your board, Wi-Fi, sensors, and
+#    `bluetooth_proxy` stay intact.
+# 3. In Home Assistant, open that ESPHome device and press "Pair Power NI Meter".
+# 4. Watch "Power NI Pairing Status" until it shows "Enter 123456# on keypad",
+#    then type your 6-digit PIN followed by `#` on the physical Freedom Unit.
+# 5. Once status shows "Paired! Safe to remove pairing helper", remove the
+#    `packages:` / `substitutions:` lines and install again. The BLE pairing
+#    stays persisted in ESP32 NVS flash across updates.
+
+substitutions:
+  powerni_mac: "AA:BB:CC:DD:EE:FF"
+  powerni_pin: "123456"
+
+esp32_ble:
+  io_capability: display_only
+
+text_sensor:
+  - platform: template
+    id: powerni_pair_status
+    name: "Power NI Pairing Status"
+    icon: mdi:bluetooth-connect
+    update_interval: never
+
+ble_client:
+  - mac_address: "${powerni_mac}"
+    id: powerni_pair_client
+    auto_connect: false
+    on_connect:
+      then:
+        - lambda: |-
+            int bond_cnt = esp_ble_get_bond_device_num();
+            ESP_LOGW("powerni_pair", "Connected to Freedom Unit (existing NVS bonds=%d)", bond_cnt);
+            esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_BOND_MITM;
+            uint8_t key_size = 16;
+            uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+            uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+            uint32_t passkey = (uint32_t) strtoul("${powerni_pin}", nullptr, 10);
+            esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(auth_req));
+            esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(key_size));
+            esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(init_key));
+            esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(rsp_key));
+            esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, &passkey, sizeof(passkey));
+            esp_err_t err = esp_ble_set_encryption(
+                id(powerni_pair_client)->get_remote_bda(), ESP_BLE_SEC_ENCRYPT_MITM
+            );
+            ESP_LOGW("powerni_pair", "Started MITM+BOND pairing (err=%d, pin=%06u)", err, (unsigned) passkey);
+            if (err == ESP_OK) {
+              char msg[48];
+              snprintf(msg, sizeof(msg), "Enter %06u# on keypad", (unsigned) passkey);
+              id(powerni_pair_status).publish_state(msg);
+            } else {
+              id(powerni_pair_status).publish_state("Encryption request failed (check logs)");
+            }
+        - delay: 35s
+        - lambda: |-
+            id(powerni_pair_client)->set_enabled(false);
+    on_passkey_notification:
+      then:
+        - lambda: |-
+            char msg[48];
+            snprintf(msg, sizeof(msg), "Enter %06u# on keypad", (unsigned) passkey);
+            ESP_LOGW("powerni_pair", "=== ENTER PASSKEY ON FREEDOM UNIT: %06u# ===", (unsigned) passkey);
+            id(powerni_pair_status).publish_state(msg);
+    on_disconnect:
+      then:
+        - lambda: |-
+            id(powerni_pair_client)->set_enabled(false);
+            int dev_num = esp_ble_get_bond_device_num();
+            bool bonded = false;
+            if (dev_num > 0) {
+              auto *dev_list = (esp_ble_bond_dev_t *) malloc(sizeof(esp_ble_bond_dev_t) * dev_num);
+              if (dev_list != nullptr) {
+                if (esp_ble_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {
+                  const uint8_t *target = id(powerni_pair_client)->get_remote_bda();
+                  for (int i = 0; i < dev_num; i++) {
+                    if (memcmp(dev_list[i].bd_addr, target, 6) == 0) {
+                      bonded = true;
+                      break;
+                    }
+                  }
+                }
+                free(dev_list);
+              }
+            }
+            ESP_LOGW("powerni_pair", "Disconnected from Freedom Unit (bonded=%s, total NVS bonds=%d)",
+                     bonded ? "yes" : "no", dev_num);
+            if (bonded) {
+              id(powerni_pair_status).publish_state("Paired! Safe to remove pairing helper");
+            } else {
+              id(powerni_pair_status).publish_state("Not paired yet — press Pair again");
+            }
+
+button:
+  - platform: template
+    name: "Pair Power NI Meter"
+    icon: mdi:key-wireless
+    on_press:
+      - lambda: |-
+          id(powerni_pair_status).publish_state("Connecting to ${powerni_mac}...");
+          id(powerni_pair_client)->set_enabled(true);

@@ -18,7 +18,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import format_mac
 
 from .const import (
@@ -45,6 +45,40 @@ def _is_powerni_meter(info: BluetoothServiceInfoBleak) -> bool:
         return True
     target = SERVICE_UUID.lower()
     return any(uuid.lower() == target for uuid in info.service_uuids)
+
+
+def _reset_code_for_name(name: str) -> str:
+    """Return the Freedom Unit keypad Bluetooth reset code for a meter serial."""
+    upper = name.strip().upper()
+    if upper.startswith("B") and len(upper) == 8 and upper[1:].isdigit():
+        return "*159268#"
+    if upper.startswith("PNI") and len(upper) == 8 and upper[3:].isdigit():
+        return "*0#"
+    return "*159268# (B#######) or *0# (PNI#####)"
+
+
+def _format_visible_scanners(hass: HomeAssistant, address: str) -> str:
+    """Return a concise summary of connectable proxies/adapters currently seeing `address`."""
+    scanners = list(
+        async_scanner_devices_by_address(hass, address, connectable=True)
+    )
+    if not scanners:
+        return "None currently visible"
+    scanners.sort(
+        key=lambda sd: (
+            sd.advertisement.rssi if sd.advertisement.rssi is not None else -999
+        ),
+        reverse=True,
+    )
+    parts: list[str] = []
+    for sd in scanners[:3]:
+        rssi = (
+            f"{sd.advertisement.rssi} dBm"
+            if sd.advertisement.rssi is not None
+            else "n/a"
+        )
+        parts.append(f"{sd.scanner.name} ({rssi})")
+    return ", ".join(parts)
 
 
 class PowerNIConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -96,7 +130,12 @@ class PowerNIConfigFlow(ConfigFlow, domain=DOMAIN):
         self._set_confirm_only()
         return self.async_show_form(
             step_id="bluetooth_confirm",
-            description_placeholders={"name": name, "address": address},
+            description_placeholders={
+                "name": name,
+                "address": address,
+                "scanners": _format_visible_scanners(self.hass, address),
+                "reset_code": _reset_code_for_name(name),
+            },
         )
 
     async def async_step_user(
@@ -210,21 +249,41 @@ class PowerNIOptionsFlow(OptionsFlow):
             )
         )
 
-        scanner_choices: dict[str, str] = {
-            "": "Automatic (strongest proxy / adapter)"
-        }
-        if address:
-            for sd in async_scanner_devices_by_address(
-                self.hass, address, connectable=True
-            ):
-                source = sd.scanner.source
-                label = sd.scanner.name
-                if source.upper() in label.upper():
-                    scanner_choices[source] = f"{label} ({sd.advertisement.rssi} dBm)"
-                else:
-                    scanner_choices[source] = (
-                        f"{label} ({source}, {sd.advertisement.rssi} dBm)"
-                    )
+        scanners = (
+            sorted(
+                async_scanner_devices_by_address(self.hass, address, connectable=True),
+                key=lambda sd: (
+                    sd.advertisement.rssi if sd.advertisement.rssi is not None else -999
+                ),
+                reverse=True,
+            )
+            if address
+            else []
+        )
+
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        preferred_source: str | None = getattr(
+            coordinator, "_preferred_proxy_source", None
+        )
+        auto_label = "Automatic (strongest proxy / adapter)"
+        if preferred_source:
+            preferred_label = preferred_source
+            for sd in scanners:
+                if sd.scanner.source.upper() == preferred_source.upper():
+                    preferred_label = sd.scanner.name
+                    break
+            auto_label = f"Automatic (currently: {preferred_label})"
+
+        scanner_choices: dict[str, str] = {"": auto_label}
+        for sd in scanners:
+            source = sd.scanner.source
+            label = sd.scanner.name
+            if source.upper() in label.upper():
+                scanner_choices[source] = f"{label} ({sd.advertisement.rssi} dBm)"
+            else:
+                scanner_choices[source] = (
+                    f"{label} ({source}, {sd.advertisement.rssi} dBm)"
+                )
         if current_proxy and current_proxy not in scanner_choices:
             scanner_choices[current_proxy] = f"{current_proxy} (configured)"
 

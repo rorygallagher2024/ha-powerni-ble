@@ -3,7 +3,7 @@
     "step": {
       "bluetooth_confirm": {
         "title": "Confirm Power NI Keypad+ Meter",
-        "description": "Set up {name} ({address}) with Home Assistant?"
+        "description": "Set up **{name}** (`{address}`) with Home Assistant?\n\n**Seen by:** {scanners}\n\nPower NI Freedom Units require a one-time 6-digit PIN pairing on the Bluetooth adapter or ESPHome proxy connecting to them. If the meter stops showing up during pairing, enter `{reset_code}` on its keypad."
       },
       "user": {
         "title": "Select Power NI Keypad+ Meter",
@@ -33,7 +33,7 @@
     "step": {
       "init": {
         "title": "Power NI Keypad+ Options",
-        "description": "Adjust how often Home Assistant polls your Freedom Unit (1 to 1440 minutes, default 15) and optionally pin it to the bonded Bluetooth proxy or adapter.",
+        "description": "Adjust how often Home Assistant checks your Freedom Unit (1 to 1440 minutes, default 15) and optionally choose a specific paired Bluetooth proxy or adapter.",
         "data": {
           "scan_interval": "Poll interval (minutes)",
           "proxy_source": "Bluetooth proxy / adapter",
@@ -114,7 +114,7 @@
   "issues": {
     "pairing_required": {
       "title": "Bluetooth pairing required for {name}",
-      "description": "Home Assistant could not authenticate with **{name}** (`{address}`) via **{proxy}**.\n\nPower NI Freedom Units require a one-time 6-digit PIN bond on the Bluetooth adapter or ESPHome proxy connecting to them. Pair the meter with that adapter/proxy (or pin the already-bonded proxy under **Configure**). If the meter ignores pairing, enter `*159268#` (`B#######` units) or `*0#` (`PNI#####` units) on the keypad to reset its Bluetooth radio."
+      "description": "Home Assistant could not authenticate with **{name}** (`{address}`) via **{proxy}**.\n\nPower NI Freedom Units require a one-time 6-digit PIN pairing on the Bluetooth adapter or ESPHome proxy connecting to them. Pair the meter with that adapter/proxy (or select your already-paired proxy under **Configure**). If the meter ignores pairing, enter `*159268#` (`B#######` units) or `*0#` (`PNI#####` units) on the keypad to reset its Bluetooth radio."
     }
   }
 }
