@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/rorygallagher2024/ha-powerni-ble/releases"><img src="https://img.shields.io/github/v/release/rorygallagher2024/ha-powerni-ble?style=flat-square" alt="GitHub Release" /></a>
     <a href="https://www.home-assistant.io/"><img src="https://img.shields.io/badge/Home%20Assistant-2026.10%2B-18BCF2?style=flat-square&logo=homeassistant&logoColor=white" alt="Home Assistant 2026.10+" /></a>
-    <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/Marketplace%20%2F%20HACS-Custom-41BDF5?style=flat-square" alt="Marketplace / HACS Custom" /></a>
+    <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=rorygallagher2024&repository=ha-powerni-ble&category=integration"><img src="https://img.shields.io/badge/Marketplace%20%2F%20HACS-Default-41BDF5?style=flat-square" alt="Marketplace / HACS Default" /></a>
     <a href="https://github.com/rorygallagher2024/ha-powerni-ble/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/rorygallagher2024/ha-powerni-ble/ci.yml?branch=main&label=CI&style=flat-square" alt="CI status" /></a>
     <a href="https://github.com/rorygallagher2024/ha-powerni-ble/actions/workflows/validate.yml"><img src="https://img.shields.io/github/actions/workflow/status/rorygallagher2024/ha-powerni-ble/validate.yml?branch=main&label=HACS%20%26%20Hassfest&style=flat-square" alt="Validate status" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/github/license/rorygallagher2024/ha-powerni-ble?style=flat-square" alt="License: MIT" /></a>
@@ -153,11 +153,15 @@ Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 
 
 Requires **Home Assistant `2026.10.0` or newer**.
 
-### Home Assistant Marketplace / HACS (Custom Repository)
+### Home Assistant Marketplace / HACS (Recommended)
 
-1. Open **Settings → Marketplace → Menu (`⋮`) → Custom repositories** (Home Assistant `2026.11+`), or **HACS → Integrations → Menu (`⋮`) → Custom repositories** on Home Assistant `2026.10`.
-2. Add `https://github.com/rorygallagher2024/ha-powerni-ble` with category **Integration**.
-3. Install **Power NI Keypad+ BLE** and restart Home Assistant.
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=rorygallagher2024&repository=ha-powerni-ble&category=integration)
+
+Or install directly from the UI:
+
+1. Open **Settings → Marketplace** (Home Assistant `2026.11+`), or **HACS → Integrations** on Home Assistant `2026.10`.
+2. Search for **`Power NI Keypad+ BLE`** (or **`powerni`**).
+3. Click **Download** / **Install** and restart Home Assistant.
 
 ### Manual Installation
 
