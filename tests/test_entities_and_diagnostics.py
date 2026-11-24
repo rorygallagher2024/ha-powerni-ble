@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.const import CONF_ADDRESS, EntityCategory
+from homeassistant.const import CONF_ADDRESS, CONF_NAME, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -167,7 +167,7 @@ async def test_setup_entities_actions_and_unload(
 async def test_diagnostics_redacts_sensitive_fields(
     hass: HomeAssistant, enable_bluetooth: None
 ) -> None:
-    """Diagnostics exposes coordinator/scanner telemetry while redacting MACs and proxy IDs."""
+    """Diagnostics exposes coordinator/scanner telemetry while redacting serials, MACs, and proxy IDs."""
     sample = make_sample_meter_data()
     scanner = make_scanner_device(scanner_name="hallway-proxy", rssi=-68)
     entry = make_config_entry(
@@ -206,9 +206,10 @@ async def test_diagnostics_redacts_sensitive_fields(
     ):
         diag = await async_get_config_entry_diagnostics(hass, entry)
 
-    assert diag["entry"]["title"] == TEST_NAME
+    assert diag["entry"]["title"] == "**REDACTED**"
     assert diag["entry"]["unique_id"] == "**REDACTED**"
     assert diag["entry"]["data"][CONF_ADDRESS] == "**REDACTED**"
+    assert diag["entry"]["data"][CONF_NAME] == "**REDACTED**"
     assert diag["entry"]["options"]["proxy_source"] == "**REDACTED**"
 
     assert diag["coordinator"]["poll_status"] == POLL_STATUS_IDLE
@@ -219,9 +220,11 @@ async def test_diagnostics_redacts_sensitive_fields(
     assert diag["coordinator"]["last_top_up"]["amount"] == 25.0
 
     assert len(diag["bluetooth_scanners"]) == 1
-    assert diag["bluetooth_scanners"][0]["name"] == "hallway-proxy"
+    assert diag["bluetooth_scanners"][0]["scanner_name"] == "hallway-proxy"
     assert diag["bluetooth_scanners"][0]["source"] == "**REDACTED**"
     assert diag["bluetooth_scanners"][0]["rssi"] == -68
+    assert TEST_NAME not in str(diag)
+    assert TEST_ADDRESS not in str(diag)
 
     # Open repair issues are deleted when the config entry is removed.
     issue_id = pairing_issue_id_for_address(TEST_ADDRESS)

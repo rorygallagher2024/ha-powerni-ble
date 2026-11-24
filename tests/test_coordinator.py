@@ -91,7 +91,8 @@ async def test_partial_read_carry_over_and_staleness(hass: HomeAssistant) -> Non
     assert coord.data.yesterday_cost == 3.10
     assert coord.field_read_at["balance"] == t1
     assert coord.field_read_at["yesterday_cost"] == t1
-    assert not coord.is_field_stale("yesterday_cost")
+    with patch.object(dt_util, "now", return_value=t1):
+        assert not coord.is_field_stale("yesterday_cost")
 
     # Second read drops yesterday_cost, but balance updates -> yesterday_cost carries over.
     t2 = t1 + timedelta(hours=2)
