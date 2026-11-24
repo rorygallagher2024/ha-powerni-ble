@@ -193,6 +193,11 @@ async def test_diagnostics_redacts_sensitive_fields(
 
     coord = entry.runtime_data
     coord._preferred_proxy_source = TEST_PROXY_SOURCE
+    coord._last_adv_monotonic = 1000.0
+    coord.last_error = (
+        f"Configured Bluetooth proxy {TEST_PROXY_SOURCE} cannot currently see "
+        f"{TEST_ADDRESS} ({TEST_NAME})"
+    )
     coord.last_top_up = TopUp(
         amount=25.0,
         at=datetime(2026, 11, 22, 9, 0, tzinfo=UTC),
@@ -200,9 +205,12 @@ async def test_diagnostics_redacts_sensitive_fields(
         balance_after=30.0,
     )
 
-    with patch(
-        "custom_components.powerni_ble.diagnostics.bluetooth.async_scanner_devices_by_address",
-        return_value=[scanner],
+    with (
+        patch(
+            "custom_components.powerni_ble.diagnostics.bluetooth.async_scanner_devices_by_address",
+            return_value=[scanner],
+        ),
+        patch.object(coord_mod.time, "monotonic", return_value=1042.5),
     ):
         diag = await async_get_config_entry_diagnostics(hass, entry)
 
@@ -215,6 +223,11 @@ async def test_diagnostics_redacts_sensitive_fields(
     assert diag["coordinator"]["poll_status"] == POLL_STATUS_IDLE
     assert diag["coordinator"]["auto_sync_history"] is True
     assert diag["coordinator"]["preferred_proxy_source"] == "**REDACTED**"
+    assert diag["coordinator"]["seconds_since_last_advertisement"] == 42.5
+    assert diag["coordinator"]["last_error"] == (
+        "Configured Bluetooth proxy **REDACTED** cannot currently see "
+        "**REDACTED** (**REDACTED**)"
+    )
     assert diag["coordinator"]["rssi"] == -68
     assert diag["coordinator"]["data"]["balance"] == 24.5
     assert diag["coordinator"]["last_top_up"]["amount"] == 25.0
@@ -225,6 +238,7 @@ async def test_diagnostics_redacts_sensitive_fields(
     assert diag["bluetooth_scanners"][0]["rssi"] == -68
     assert TEST_NAME not in str(diag)
     assert TEST_ADDRESS not in str(diag)
+    assert TEST_PROXY_SOURCE not in str(diag)
 
     # Open repair issues are deleted when the config entry is removed.
     issue_id = pairing_issue_id_for_address(TEST_ADDRESS)

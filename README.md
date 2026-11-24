@@ -312,6 +312,8 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 
 - The Microchip/ISSC BLE module supports only **one active BLE connection at a time**.
 - While the official Power NI Keypad+ phone app is open and connected, the meter stops advertising and Home Assistant automatically pauses scheduled polls in **`Waiting for meter`** status without logging errors, then triggers an immediate catch-up poll once the phone app is closed.
+- If advertisements remain absent for more than **30 minutes**, Home Assistant escalates to **`Error`** so prolonged dropouts (such as a stuck background app or offline proxy) are visible, while still auto-recovering the moment advertisements resume.
+- **Android background sync tip:** The official Power NI Keypad+ Android app runs an hourly background sync job that can connect to your meter even when you haven't opened the app and hold the BLE connection open until your phone leaves range. To prevent this without unpairing your meter or breaking manual top-ups, open **Settings → Apps → Power NI Keypad+ → App battery usage** and turn off **Allow background usage** (or set it to **Restricted**), and swipe the app away from Recents after topping up.
 - Always close the phone app before running the one-time PIN pairing. During normal polling, Home Assistant connects briefly and disconnects cleanly afterward.
 
 ### `Insufficient authorization (8)` or `Pairing failed due to error: 102`
@@ -327,7 +329,7 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 
 ## Support & Development
 
-- **Reporting issues:** Download a redacted diagnostics bundle via **Settings → Devices & services → Power NI Keypad+ BLE → `⋮` → Download diagnostics** (Bluetooth MAC addresses, unique IDs, and proxy sources are automatically redacted) and attach it to a [GitHub Issue](https://github.com/rorygallagher2024/ha-powerni-ble/issues).
+- **Reporting issues:** Download a redacted diagnostics bundle via **Settings → Devices & services → Power NI Keypad+ BLE → `⋮` → Download diagnostics** (meter serials, Bluetooth MAC addresses, unique IDs, and proxy sources are automatically redacted) and attach it to a [GitHub Issue](https://github.com/rorygallagher2024/ha-powerni-ble/issues).
 - **Local checks & tests (Python 3.14+):**
   ```bash
   pip install -r requirements-dev.txt

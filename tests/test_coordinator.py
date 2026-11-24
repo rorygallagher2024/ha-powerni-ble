@@ -22,6 +22,7 @@ from custom_components.powerni_ble.client import (
 )
 from custom_components.powerni_ble.const import (
     ADVERTISEMENT_SILENT_SECONDS,
+    ADVERTISEMENT_WAITING_TIMEOUT_SECONDS,
     CONF_AUTO_SYNC_HISTORY,
     DOMAIN,
     FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS,
@@ -233,6 +234,57 @@ async def test_top_up_detection_event_and_store_persistence(
     assert reloaded.last_top_up.amount == 20.00
     assert reloaded.last_top_up.balance_before == 10.00
     assert reloaded.last_top_up.balance_after == 30.00
+
+
+async def test_waiting_escalates_to_error_after_timeout(
+    hass: HomeAssistant,
+) -> None:
+    """Prolonged silence shortens waiting re-check, escalates to error, and still auto-recovers."""
+    coord = _make_coordinator(hass, options={"scan_interval": 120})
+    coord.data = make_sample_meter_data()
+
+    # Brief silence defers cleanly and schedules a re-check at the waiting timeout.
+    t_adv = 1000.0
+    t_wait = t_adv + ADVERTISEMENT_SILENT_SECONDS + 30.0
+    coord._last_adv_monotonic = t_adv
+    with patch.object(coord_mod.time, "monotonic", return_value=t_wait):
+        deferred = await coord._async_update_data()
+
+    assert deferred is coord.data
+    assert coord._poll_deferred is True
+    assert coord.poll_status == POLL_STATUS_WAITING
+    assert coord.update_interval == timedelta(
+        seconds=ADVERTISEMENT_WAITING_TIMEOUT_SECONDS - (t_wait - t_adv)
+    )
+
+    # Once silence reaches ADVERTISEMENT_WAITING_TIMEOUT_SECONDS, stop deferring and probe.
+    t_expired = t_adv + ADVERTISEMENT_WAITING_TIMEOUT_SECONDS + 5.0
+    with (
+        patch.object(coord_mod.time, "monotonic", return_value=t_expired),
+        patch.object(
+            coord,
+            "_async_poll",
+            AsyncMock(side_effect=UpdateFailed("Meter not visible")),
+        ) as mock_poll,
+        pytest.raises(UpdateFailed, match="Meter not visible"),
+    ):
+        await coord._async_update_data()
+
+    mock_poll.assert_awaited_once()
+    assert coord._poll_deferred is False
+    assert coord.poll_status == POLL_STATUS_ERROR
+    assert coord._consecutive_failures == 1
+
+    # Advertisements resuming later after the gap still trigger an immediate recovery poll.
+    t_resume = t_expired + FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS + 5.0
+    with (
+        patch.object(coord_mod.time, "monotonic", return_value=t_resume),
+        patch.object(coord, "async_request_refresh", AsyncMock()) as mock_refresh,
+    ):
+        coord._on_advertisement(make_service_info(rssi=-74))
+        await hass.async_block_till_done()
+
+    mock_refresh.assert_awaited_once()
 
 
 async def test_broadcast_deferral_resume_and_rssi_throttling(
