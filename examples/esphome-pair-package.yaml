@@ -20,9 +20,9 @@
 # 3. In Home Assistant, open that ESPHome device and press "Pair Power NI Meter".
 # 4. Watch "Power NI Pairing Status" until it shows "Enter 123456# on keypad",
 #    then type your 6-digit PIN followed by `#` on the physical Freedom Unit.
-# 5. Once status shows "Bonded! Safe to remove pairing package", remove the
-#    `packages:` / `substitutions:` lines and install again. The BLE bond stays
-#    persisted in ESP32 NVS flash across OTA updates.
+# 5. Once status shows "Paired! Safe to remove pairing helper", remove the
+#    `packages:` / `substitutions:` lines and install again. The BLE pairing
+#    stays persisted in ESP32 NVS flash across updates.
 
 substitutions:
   powerni_mac: "AA:BB:CC:DD:EE:FF"
@@ -102,9 +102,9 @@ ble_client:
             ESP_LOGW("powerni_pair", "Disconnected from Freedom Unit (bonded=%s, total NVS bonds=%d)",
                      bonded ? "yes" : "no", dev_num);
             if (bonded) {
-              id(powerni_pair_status).publish_state("Bonded! Safe to remove pairing package");
+              id(powerni_pair_status).publish_state("Paired! Safe to remove pairing helper");
             } else {
-              id(powerni_pair_status).publish_state("Not bonded yet — press Pair again");
+              id(powerni_pair_status).publish_state("Not paired yet — press Pair again");
             }
 
 button:
