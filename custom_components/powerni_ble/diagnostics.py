@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.components import bluetooth
 from homeassistant.components.diagnostics import async_redact_data
-from homeassistant.const import CONF_ADDRESS
+from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import HomeAssistant
 
 from . import PowerNIConfigEntry
@@ -15,8 +15,10 @@ from .const import CONF_PROXY_SOURCE
 
 TO_REDACT = {
     CONF_ADDRESS,
+    CONF_NAME,
     CONF_PROXY_SOURCE,
     "preferred_proxy_source",
+    "title",
     "unique_id",
     "source",
 }
@@ -41,7 +43,7 @@ async def async_get_config_entry_diagnostics(
 
     scanners = [
         {
-            "name": scanner_dev.scanner.name,
+            "scanner_name": scanner_dev.scanner.name,
             "source": scanner_dev.scanner.source,
             "rssi": scanner_dev.advertisement.rssi,
             "connectable": scanner_dev.ble_device is not None,
