@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="custom_components/powerni_ble/brand/icon.png" alt="Power NI Keypad+ BLE icon" width="96" />
-  <h1>Power NI Keypad+ BLE for Home Assistant</h1>
+  <img src="custom_components/powerni_ble/brand/icon.png" alt="Power NI Keypad+ icon" width="96" />
+  <h1>Power NI Keypad+ for Home Assistant</h1>
   <p>Home Assistant integration for <strong>Power NI (PowerNI) Keypad+</strong> prepay electricity meters (Freedom Units) in Northern Ireland over Bluetooth.</p>
 
   <p>
@@ -36,7 +36,7 @@
 - **Optional Energy Dashboard history:** Can pull up to 14 days of hourly electricity usage straight from your meter.
 
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="Example Home Assistant dashboard for Power NI Keypad+ BLE" width="820" />
+  <img src="docs/images/dashboard.png" alt="Example Home Assistant dashboard for Power NI Keypad+" width="820" />
   <br />
   <em>Example Home Assistant dashboard showing 7-day credit balance, live load, 14-day meter energy history, and Bluetooth diagnostics.</em>
 </p>
@@ -96,7 +96,7 @@ Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 
 2. Temporarily OTA-flash the target ESP32 using [examples/esphome-pair-helper.yaml](examples/esphome-pair-helper.yaml) (updated with your Freedom Unit's MAC address, API key, and your chosen 6-digit PIN).
 3. Watch the ESPHome logs until `=== ENTER PASSKEY ON FREEDOM UNIT: 123456# ===` appears, then type that 6-digit PIN followed by `#` on your Freedom Unit keypad.
 4. Flash your normal ESPHome Bluetooth Proxy firmware back onto the ESP32 — the BLE bond remains saved in NVS flash.
-5. **Automatic** proxy selection remembers and reuses that bonded proxy after the first successful poll, or you can open **Configure** on **Power NI Keypad+ BLE** and pin **Bluetooth proxy / adapter** explicitly.
+5. **Automatic** proxy selection remembers and reuses that bonded proxy after the first successful poll, or you can open **Configure** on **Power NI Keypad+** and pin **Bluetooth proxy / adapter** explicitly.
 
 </details>
 
@@ -114,7 +114,7 @@ Requires **Home Assistant `2026.10.0` or newer**.
 Or install directly from the UI:
 
 1. Open **Settings → Marketplace** (Home Assistant `2026.11+`), or **HACS → Integrations** on Home Assistant `2026.10`.
-2. Search for **`Power NI Keypad+ BLE`** (or **`powerni`**).
+2. Search for **`Power NI Keypad+`** (or **`powerni`**).
 3. Click **Download** / **Install** and restart Home Assistant.
 
 ### Manual Installation
@@ -126,14 +126,14 @@ Or install directly from the UI:
 
 1. Open **Settings → Devices & services**:
    - Auto-discovered meters appear under **Discovered** — click **Add** to confirm.
-   - Or click **+ Add integration**, search for **Power NI Keypad+ BLE**, and pick your meter (or choose **Enter MAC address manually**).
+   - Or click **+ Add integration**, search for **Power NI Keypad+**, and pick your meter (or choose **Enter MAC address manually**).
 2. Click **Configure** on the integration entry at any time to adjust:
    - **Poll interval (minutes):** `1` to `1440` minutes (default `15`).
    - **Bluetooth proxy / adapter:** Leave **Automatic** to remember and reuse the last working bonded proxy automatically (falling back if offline), or pin a specific bonded proxy when multiple proxies are in range.
    - **Automatically sync 14-day energy history (every 6 hours):** Disable if you only want manual **Sync energy history** imports (useful when dedicated CT clamps or solar inverters already feed your Energy dashboard).
 
 <p align="center">
-  <img src="docs/images/configure-dialog.png" alt="Power NI Keypad+ BLE options dialog" width="400" />
+  <img src="docs/images/configure-dialog.png" alt="Power NI Keypad+ options dialog" width="400" />
   <br />
   <em>Integration options dialog for adjusting the poll interval and pinning the bonded Bluetooth proxy.</em>
 </p>
@@ -173,7 +173,7 @@ Or install directly from the UI:
 | **Updating** | `on` while connecting, reading, or retrying a BLE poll | — | `binary_sensor` (`running`) |
 
 <p align="center">
-  <img src="docs/images/device-page.png" alt="Power NI Keypad+ BLE device page in Home Assistant" width="520" />
+  <img src="docs/images/device-page.png" alt="Power NI Keypad+ device page in Home Assistant" width="520" />
   <br />
   <em>Home Assistant device page showing live telemetry, Refresh control, and configurable Poll interval.</em>
 </p>
@@ -365,7 +365,7 @@ The Freedom Unit only allows one Bluetooth connection at a time. To keep BLE ses
 
 ## Support & Development
 
-- **Reporting issues:** Download a redacted diagnostics bundle via **Settings → Devices & services → Power NI Keypad+ BLE → `⋮` → Download diagnostics** (meter serials, Bluetooth MAC addresses, unique IDs, and proxy sources are automatically redacted) and attach it to a [GitHub Issue](https://github.com/rorygallagher2024/ha-powerni-ble/issues).
+- **Reporting issues:** Download a redacted diagnostics bundle via **Settings → Devices & services → Power NI Keypad+ → `⋮` → Download diagnostics** (meter serials, Bluetooth MAC addresses, unique IDs, and proxy sources are automatically redacted) and attach it to a [GitHub Issue](https://github.com/rorygallagher2024/ha-powerni-ble/issues).
 - **Local checks & tests (Python 3.14+):**
   ```bash
   pip install -r requirements-dev.txt
