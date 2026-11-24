@@ -32,7 +32,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Power NI Keypad+ BLE Options",
+        "title": "Power NI Keypad+ Options",
         "description": "Adjust how often Home Assistant polls your Freedom Unit (1 to 1440 minutes, default 15) and optionally pin it to the bonded Bluetooth proxy or adapter.",
         "data": {
           "scan_interval": "Poll interval (minutes)",
