@@ -13,14 +13,13 @@
   </p>
 
   <p>
-    <a href="#exposed-entities">Entities</a> ·
     <a href="#compatibility">Compatibility</a> ·
     <a href="#prerequisites-one-time-6-digit-pin-pairing">Pairing</a> ·
     <a href="#installation">Installation</a> ·
     <a href="#setup--configuration">Configuration</a> ·
+    <a href="#exposed-entities">Entities</a> ·
     <a href="#energy-dashboard">Energy Dashboard</a> ·
-    <a href="#troubleshooting">Troubleshooting</a> ·
-    <a href="#future-roadmap">Roadmap</a>
+    <a href="#troubleshooting">Troubleshooting</a>
   </p>
 </div>
 
@@ -40,55 +39,6 @@
   <br />
   <em>Example Home Assistant dashboard showing 7-day credit balance, live load, 14-day meter energy history, and Bluetooth diagnostics.</em>
 </p>
-
-## Exposed Entities
-
-| Entity | Category | Description | Unit | Device / State Class |
-| --- | --- | --- | --- | --- |
-| **Balance** | Sensor | Remaining Keypad+ credit balance (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
-| **Days left** | Sensor | Estimated days remaining (`status` attribute e.g. `ABOUT 51`) | `d` | `measurement` |
-| **Current load** | Sensor | Instantaneous power draw | `kW` | `power` / `measurement` |
-| **Current cost rate** | Sensor | Current hourly cost at active load | `GBP/h` | `measurement` |
-| **Total import energy** | Sensor | Cumulative import meter register (Energy Dashboard ready) | `kWh` | `energy` / `total_increasing` |
-| **Yesterday's spend** | Sensor | Previous day electricity spend (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
-| **Last 7 days spend** | Sensor | Rolling 7-day spend (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
-| **Last month spend** | Sensor | Previous month spend (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
-| **Last top-up** | Sensor | Estimated last top-up amount (`balance_before` / `balance_after` attributes) | `GBP` | `monetary` |
-| **Last top-up time** | Sensor | Timestamp when the last top-up was detected | — | `timestamp` |
-| **Last successful read** | Diagnostic | Timestamp of the most recent successful BLE poll | — | `timestamp` |
-| **Poll status** | Diagnostic | Live BLE poll state (`idle`, `connecting`, `reading`, `retrying`, `waiting`, `error`) | — | `enum` |
-| **Signal strength** | Diagnostic | Smoothed Bluetooth RSSI (rolling median) from the selected adapter or proxy | `dBm` | `signal_strength` / `measurement` |
-| **Updating** | Diagnostic | `on` while connecting, reading, or retrying a BLE poll | — | `binary_sensor` (`running`) |
-| **Refresh** | Control | Button triggering an immediate full BLE read across all sections | — | `button` |
-| **Sync energy history** | Configuration | Button importing up to 14 days of 30-minute meter history (`0xA0`) | — | `button` |
-| **Poll interval** | Configuration | Adjustable polling interval synced with **Configure** (`1`–`1440` min) | `min` | `number` (`duration`) |
-
-<p align="center">
-  <img src="docs/images/device-page.png" alt="Power NI Keypad+ BLE device page in Home Assistant" width="520" />
-  <br />
-  <em>Home Assistant device page showing live telemetry, Refresh control, and configurable Poll interval.</em>
-</p>
-
-## How Polling Works
-
-The Freedom Unit only allows one Bluetooth connection at a time. To keep BLE sessions short and resilient:
-
-### Tiered Read Schedule
-
-| Readings | Read frequency | Notes |
-| --- | --- | --- |
-| **Balance** & **Days left** | Every poll | Always read first |
-| **Current load** & **Current cost rate** | Every poll | Live demand and hourly rate |
-| **Total import energy** | Once per hour | Also read on startup and **Refresh** |
-| **Yesterday / Last 7 days / Last month spend** | Every 6 hours & after midnight | Also read on startup and **Refresh** |
-| **30-min energy survey (`0xA0`)** | Every 6 hours (background) | Backfills completed hourly `kWh` buckets into Long-Term Statistics |
-
-### Live Feedback & Resilience
-
-- **Broadcast-aware polling:** Listens to per-address BLE advertisements from the meter. If broadcasts stop (for example while the mobile app holds the meter's single connection), scheduled polls pause cleanly in **`Waiting for meter`** status without logging failures and catch up immediately once broadcasts resume.
-- **Live refresh feedback:** Pressing **Refresh** immediately transitions **Poll status** (`Connecting` → `Reading` → `Idle`) and flips **Updating** (`on` → `off`). Sections publish progressively during the session, so **Balance**, **Days left**, and **Current load** appear in ~6–10 seconds without waiting for spend history to finish.
-- **Disconnect detection & in-poll retry:** If a BLE link drops mid-session, the client aborts waiting immediately without clearing a healthy GATT cache, waits 3 seconds for the meter radio to return to idle, and retries once within the same poll before falling back to shortened `1 / 2 / 5` minute retries.
-- **Age-based availability:** Every meter reading sensor carries a `last_read` ISO timestamp attribute showing when that field was actually returned by the meter, and stays available across brief BLE interruptions until older than `max(24 hours, 3 × poll_interval)`.
 
 ## Compatibility
 
@@ -184,6 +134,68 @@ Or install directly from the UI:
   <em>Integration options dialog for adjusting the poll interval and pinning the bonded Bluetooth proxy.</em>
 </p>
 
+## Exposed Entities
+
+### Sensors
+
+| Entity | Description | Unit | Device / State Class |
+| --- | --- | --- | --- |
+| **Balance** | Remaining Keypad+ credit balance (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
+| **Days left** | Estimated days remaining (`status` attribute e.g. `ABOUT 51`) | `d` | `measurement` |
+| **Current load** | Instantaneous power draw | `kW` | `power` / `measurement` |
+| **Current cost rate** | Current hourly cost at active load | `GBP/h` | `measurement` |
+| **Total import energy** | Cumulative import meter register (Energy Dashboard ready) | `kWh` | `energy` / `total_increasing` |
+| **Yesterday's spend** | Previous day electricity spend (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
+| **Last 7 days spend** | Rolling 7-day spend (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
+| **Last month spend** | Previous month spend (hourly Long-Term Statistics) | `GBP` | `monetary` / `total` |
+| **Last top-up** | Estimated last top-up amount (`balance_before` / `balance_after` attributes) | `GBP` | `monetary` |
+| **Last top-up time** | Timestamp when the last top-up was detected | — | `timestamp` |
+
+### Controls & Configuration
+
+| Entity | Type | Description | Unit |
+| --- | --- | --- | --- |
+| **Refresh** | `button` (Control) | Triggers an immediate full BLE read across all sections | — |
+| **Sync energy history** | `button` (Configuration) | Imports up to 14 days of 30-minute meter history (`0xA0`) | — |
+| **Poll interval** | `number` (Configuration) | Adjustable polling interval synced with **Configure** (`1`–`1440` min) | `min` |
+
+### Diagnostics
+
+| Entity | Description | Unit | Type / Device Class |
+| --- | --- | --- | --- |
+| **Last successful read** | Timestamp of the most recent successful BLE poll | — | `timestamp` |
+| **Poll status** | Live BLE poll state (`idle`, `connecting`, `reading`, `retrying`, `waiting`, `error`) | — | `enum` |
+| **Signal strength** | Smoothed Bluetooth RSSI (rolling median) from the selected adapter or proxy | `dBm` | `signal_strength` / `measurement` |
+| **Updating** | `on` while connecting, reading, or retrying a BLE poll | — | `binary_sensor` (`running`) |
+
+<p align="center">
+  <img src="docs/images/device-page.png" alt="Power NI Keypad+ BLE device page in Home Assistant" width="520" />
+  <br />
+  <em>Home Assistant device page showing live telemetry, Refresh control, and configurable Poll interval.</em>
+</p>
+
+## Energy Dashboard
+
+The integration provides two ways to feed Home Assistant's **Energy** dashboard:
+
+- **`Total import energy` sensor** (`kWh`, integer precision): updates on live polls as whole kilowatt-hours tick up.
+- **`Energy history` external statistic** (`powerni_ble:<mac>_energy_history`, `0.00625 kWh` counter resolution): backfills up to 14 days of completed hourly energy totals from the meter's 30-minute internal survey (`0xA0`) into an isolated external statistic without altering any existing Energy dashboard sensors or sources. Disable **Automatically sync 14-day energy history** in **Configure** if you prefer manual-only imports via the **Sync energy history** button.
+
+1. Open **Settings → Dashboards → Energy**.
+2. Choose the section matching your setup:
+   - **Electricity grid → Add consumption:** Select **Total import energy** (or **`<meter> Energy history`** for 0.006 kWh hourly resolution) to track grid import alongside solar or battery systems, and optionally add a static or entity tariff price (`GBP/kWh`).
+   - **Home consumption:** Select **Total import energy** (or **`<meter> Energy history`**) under **Home energy** and optionally **Current load** under **Home power** if monitoring whole-home electricity directly from the Freedom Unit, then click **Save**.
+3. Wait 1–2 hours for Home Assistant's hourly Long-Term Statistics bars to update (historical `Energy history` bars appear right after the first survey sync).
+
+<p align="center">
+  <img src="docs/images/energy-dashboard.png" alt="Adding Total import energy to the Home Assistant Energy Dashboard" width="480" />
+  <br />
+  <em>Adding Total import energy in Home Assistant's Energy Dashboard settings.</em>
+</p>
+
+> [!NOTE]
+> The **Total import energy** sensor reports the cumulative register in whole `kWh` integers (`0` decimal precision on the meter's LCD), so its hourly Energy Dashboard bars increment in `1 kWh` steps. For finer `0.00625 kWh` hourly resolution, add **`<meter> Energy history`** instead.
+
 ## Dynamic & Adaptive Polling
 
 Alongside **Configure**, the **Poll interval** `number` entity (`number.<meter>_poll_interval`, `EntityCategory.CONFIG`) can be changed directly on dashboards or in automations:
@@ -276,27 +288,26 @@ actions:
 
 </details>
 
-## Energy Dashboard
+## How Polling Works
 
-The integration provides two ways to feed Home Assistant's **Energy** dashboard:
+The Freedom Unit only allows one Bluetooth connection at a time. To keep BLE sessions short and resilient:
 
-- **`Total import energy` sensor** (`kWh`, integer precision): updates on live polls as whole kilowatt-hours tick up.
-- **`Energy history` external statistic** (`powerni_ble:<mac>_energy_history`, `0.00625 kWh` counter resolution): backfills up to 14 days of completed hourly energy totals from the meter's 30-minute internal survey (`0xA0`) into an isolated external statistic without altering any existing Energy dashboard sensors or sources. Disable **Automatically sync 14-day energy history** in **Configure** if you prefer manual-only imports via the **Sync energy history** button.
+### Tiered Read Schedule
 
-1. Open **Settings → Dashboards → Energy**.
-2. Choose the section matching your setup:
-   - **Electricity grid → Add consumption:** Select **Total import energy** (or **`<meter> Energy history`** for 0.006 kWh hourly resolution) to track grid import alongside solar or battery systems, and optionally add a static or entity tariff price (`GBP/kWh`).
-   - **Home consumption:** Select **Total import energy** (or **`<meter> Energy history`**) under **Home energy** and optionally **Current load** under **Home power** if monitoring whole-home electricity directly from the Freedom Unit, then click **Save**.
-3. Wait 1–2 hours for Home Assistant's hourly Long-Term Statistics bars to update (historical `Energy history` bars appear right after the first survey sync).
+| Readings | Read frequency | Notes |
+| --- | --- | --- |
+| **Balance** & **Days left** | Every poll | Always read first |
+| **Current load** & **Current cost rate** | Every poll | Live demand and hourly rate |
+| **Total import energy** | Once per hour | Also read on startup and **Refresh** |
+| **Yesterday / Last 7 days / Last month spend** | Every 6 hours & after midnight | Also read on startup and **Refresh** |
+| **30-min energy survey (`0xA0`)** | Every 6 hours (background) | Backfills completed hourly `kWh` buckets into Long-Term Statistics |
 
-<p align="center">
-  <img src="docs/images/energy-dashboard.png" alt="Adding Total import energy to the Home Assistant Energy Dashboard" width="480" />
-  <br />
-  <em>Adding Total import energy in Home Assistant's Energy Dashboard settings.</em>
-</p>
+### Live Feedback & Resilience
 
-> [!NOTE]
-> The **Total import energy** sensor reports the cumulative register in whole `kWh` integers (`0` decimal precision on the meter's LCD), so its hourly Energy Dashboard bars increment in `1 kWh` steps. For finer `0.00625 kWh` hourly resolution, add **`<meter> Energy history`** instead.
+- **Broadcast-aware polling:** Listens to per-address BLE advertisements from the meter. If broadcasts stop (for example while the mobile app holds the meter's single connection), scheduled polls pause cleanly in **`Waiting for meter`** status without logging failures and catch up immediately once broadcasts resume (escalating to **`Error`** after 30 minutes of continuous silence while still auto-recovering once broadcasts return).
+- **Live refresh feedback:** Pressing **Refresh** immediately transitions **Poll status** (`Connecting` → `Reading` → `Idle`) and flips **Updating** (`on` → `off`). Sections publish progressively during the session, so **Balance**, **Days left**, and **Current load** appear in ~6–10 seconds without waiting for spend history to finish.
+- **Disconnect detection & in-poll retry:** If a BLE link drops mid-session, the client aborts waiting immediately without clearing a healthy GATT cache, waits 3 seconds for the meter radio to return to idle, and retries once within the same poll before falling back to shortened `1 / 2 / 5` minute retries.
+- **Age-based availability:** Every meter reading sensor carries a `last_read` ISO timestamp attribute showing when that field was actually returned by the meter, and stays available across brief BLE interruptions until older than `max(24 hours, 3 × poll_interval)`.
 
 ## Troubleshooting
 
