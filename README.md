@@ -19,6 +19,7 @@
     <a href="#setup--configuration">Configuration</a> ·
     <a href="#exposed-entities">Entities</a> ·
     <a href="#energy-dashboard">Energy Dashboard</a> ·
+    <a href="#automations">Automations</a> ·
     <a href="#troubleshooting">Troubleshooting</a>
   </p>
 </div>
@@ -42,18 +43,15 @@
 
 ## Compatibility
 
-### Home Assistant Version
-
-- **Requires Home Assistant `2026.10.0` or newer** (uses `bluetooth.async_register_advertisement_callback` for raw per-address advertisement callbacks in broadcast-aware polling and modern recorder external statistics metadata).
-- Tested live on **Home Assistant `2026.11.1`**.
+- **Home Assistant:** Requires **`2026.10.0`** or newer (tested live on **`2026.11.1`**).
 
 ### Freedom Unit Hardware
 
-| Unit Serial / Advertised Name | Status | BLE Discovery | Meter BT Reset Code | Notes |
-| --- | --- | --- | --- | --- |
-| `B#######` (e.g. `B21xxxxx`) | Verified working | ISSC service UUID (`49535343-fe7d-4ae5-8fa9-9fafd205e455`) | `*159268#` | Tested live on real hardware |
-| `PNI#####` (e.g. `PNI12345`) | Supported (untested) | `PNI[0-9]{5}` name + ISSC service UUID | `*0#` | Community reports welcome via Issues |
-| Other `AAA#####` Freedom Units | Supported (untested) | ISSC service UUID (`49535343-fe7d-4ae5-8fa9-9fafd205e455`) | `*0#` or `*159268#` | Matched by config flow `^[A-Z]{3}\d{5}$` |
+| Unit Serial | Status | Bluetooth Reset Code | Notes |
+| --- | --- | --- | --- |
+| `B#######` (e.g. `B21xxxxx`) | Verified working | `*159268#` | Tested live on real hardware |
+| `PNI#####` (e.g. `PNI12345`) | Supported (untested) | `*0#` | Community reports welcome via Issues |
+| Other `AAA#####` Freedom Units | Supported (untested) | `*0#` or `*159268#` | Matched automatically by config flow |
 
 ### Bluetooth Transports
 
@@ -64,9 +62,10 @@
 
 ## Prerequisites: One-Time 6-Digit PIN Pairing
 
-Power NI Freedom Units require an authenticated BLE bond (`LE Legacy + MITM 6-digit PIN`) before accepting GATT commands. Pair the unit **once** with the Bluetooth adapter or ESP32 proxy that Home Assistant will connect through.
+Power NI Freedom Units require an authenticated 6-digit PIN BLE bond before accepting commands. Pair the unit **once** using whichever Bluetooth transport you have:
 
-### Option A: Local Linux Bluetooth (`bluetoothctl` on Home Assistant host)
+<details>
+<summary><strong>Option A: Local Linux Bluetooth (<code>bluetoothctl</code> on Home Assistant host)</strong></summary>
 
 If your Freedom Unit is within range of your Home Assistant server's built-in Bluetooth adapter:
 
@@ -86,7 +85,10 @@ If your Freedom Unit is within range of your Home Assistant server's built-in Bl
 3. When `bluetoothctl` prints a 6-digit passkey, type that 6-digit PIN followed by `#` on your physical Freedom Unit keypad.
 4. Once `Pairing successful` appears, run `trust AA:BB:CC:DD:EE:FF` and `disconnect AA:BB:CC:DD:EE:FF`.
 
-### Option B: ESPHome Bluetooth Proxy (e.g., ESP32 / Everything Presence Lite)
+</details>
+
+<details>
+<summary><strong>Option B: ESPHome Bluetooth Proxy (e.g., ESP32 / Everything Presence Lite)</strong></summary>
 
 Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 6-digit PIN. However, ESP-IDF stores BLE bonds persistently in NVS flash (`CONFIG_BT_BLE_SMP_BOND_NVS_FLASH=y`), which survives OTA firmware updates:
 
@@ -95,6 +97,8 @@ Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 
 3. Watch the ESPHome logs until `=== ENTER PASSKEY ON FREEDOM UNIT: 123456# ===` appears, then type that 6-digit PIN followed by `#` on your Freedom Unit keypad.
 4. Flash your normal ESPHome Bluetooth Proxy firmware back onto the ESP32 — the BLE bond remains saved in NVS flash.
 5. **Automatic** proxy selection remembers and reuses that bonded proxy after the first successful poll, or you can open **Configure** on **Power NI Keypad+ BLE** and pin **Bluetooth proxy / adapter** explicitly.
+
+</details>
 
 > [!TIP]
 > If your Freedom Unit ignores pairing or stops advertising, reset its internal Bluetooth radio from the keypad by entering **`*159268#`** (`B#######` units) or **`*0#`** (`PNI#####` units).
@@ -196,7 +200,9 @@ The integration provides two ways to feed Home Assistant's **Energy** dashboard:
 > [!NOTE]
 > The **Total import energy** sensor reports the cumulative register in whole `kWh` integers (`0` decimal precision on the meter's LCD), so its hourly Energy Dashboard bars increment in `1 kWh` steps. For finer `0.00625 kWh` hourly resolution, add **`<meter> Energy history`** instead.
 
-## Dynamic & Adaptive Polling
+## Automations
+
+### Dynamic & Adaptive Polling
 
 Alongside **Configure**, the **Poll interval** `number` entity (`number.<meter>_poll_interval`, `EntityCategory.CONFIG`) can be changed directly on dashboards or in automations:
 
@@ -235,7 +241,7 @@ actions:
 
 </details>
 
-## Top-Up Detection
+### Top-Up Detection
 
 When a freshly read **Balance** rises by at least **`£1.00`** compared to the previous fresh reading (persisted across Home Assistant restarts):
 
@@ -311,19 +317,26 @@ The Freedom Unit only allows one Bluetooth connection at a time. To keep BLE ses
 
 ## Troubleshooting
 
-### Weak BLE signal (`RSSI`) or intermittent timeouts
+<details>
+<summary><strong>Weak BLE signal (<code>RSSI</code>) or intermittent timeouts</strong></summary>
 
 - Check the diagnostic **Signal strength** (`dBm`) sensor on the device page or the RSSI shown next to your adapter/proxy in **Configure**. Signal stronger than **`-80 dBm`** is recommended; weaker than `-88 dBm` can drop while negotiating GATT encryption.
 - Move an ESPHome Bluetooth Proxy closer to the Freedom Unit (same room or hallway) and use the `esp-idf` framework.
 
-### Freedom Unit stops responding to pairing or scans
+</details>
+
+<details>
+<summary><strong>Freedom Unit stops responding to pairing or scans</strong></summary>
 
 - Freedom Units occasionally stop accepting new bonds or wedge their BLE radio after failed pairing attempts.
 - Toggle Bluetooth off and back on from the physical keypad:
   - **`B#######` units:** `*159268#`
   - **`PNI#####` units:** `*0#`
 
-### Phone app contention
+</details>
+
+<details>
+<summary><strong>Phone app contention (stuck on <code>Waiting for meter</code>)</strong></summary>
 
 - The Microchip/ISSC BLE module supports only **one active BLE connection at a time**.
 - While the official Power NI Keypad+ phone app is open and connected, the meter stops advertising and Home Assistant automatically pauses scheduled polls in **`Waiting for meter`** status without logging errors, then triggers an immediate catch-up poll once the phone app is closed.
@@ -331,16 +344,24 @@ The Freedom Unit only allows one Bluetooth connection at a time. To keep BLE ses
 - **Android background sync tip:** The official Power NI Keypad+ Android app runs an hourly background sync job that can connect to your meter even when you haven't opened the app and hold the BLE connection open until your phone leaves range. To prevent this without unpairing your meter or breaking manual top-ups, open **Settings → Apps → Power NI Keypad+ → App battery usage** and turn off **Allow background usage** (or set it to **Restricted**), and swipe the app away from Recents after topping up.
 - Always close the phone app before running the one-time PIN pairing. During normal polling, Home Assistant connects briefly and disconnects cleanly afterward.
 
-### `Insufficient authorization (8)` or `Pairing failed due to error: 102`
+</details>
+
+<details>
+<summary><strong><code>Insufficient authorization (8)</code> or <code>Pairing failed due to error: 102</code></strong></summary>
 
 - Home Assistant automatically raises a **Repair** notification under **Settings → System → Repairs** naming the unbonded adapter or proxy if an authentication or pairing error occurs, and clears it once a poll succeeds.
 - **`Insufficient authorization (8)`:** The adapter or proxy Home Assistant selected does not hold a valid 6-digit PIN bond. Complete the [One-Time 6-Digit PIN Pairing](#prerequisites-one-time-6-digit-pin-pairing) steps on that proxy and pin **Bluetooth proxy / adapter** in **Configure** if needed.
 - **`error: 102` (`ESP_AUTH_SMP_CONN_TOUT`):** During ESPHome pairing, the 6-digit PIN was not entered as `NNNNNN#` on the Freedom Unit keypad before the ~30-second SMP timeout. Enter `*159268#` (or `*0#`) on the keypad and retry while watching logs.
 - Use **Download diagnostics** on the integration entry (**⋮ → Download diagnostics**) for a redacted JSON snapshot of coordinator state, poll status, and visible Bluetooth proxies when filing an issue.
 
-### Brand icon shows "icon not available"
+</details>
+
+<details>
+<summary><strong>Brand icon shows "icon not available"</strong></summary>
 
 - Local integration brand icons (`custom_components/powerni_ble/brand/`) are served by Home Assistant 2026.x+. Restart Home Assistant after installing and hard-refresh your browser (`Cmd+Shift+R` / `Ctrl+Shift+R`).
+
+</details>
 
 ## Support & Development
 
