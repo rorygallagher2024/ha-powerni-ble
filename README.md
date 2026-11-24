@@ -58,7 +58,7 @@
 | Transport | Status | One-Time Bonding Method | Notes |
 | --- | --- | --- | --- |
 | Local Linux Bluetooth (`bluetoothctl` / BlueZ) | Supported | Pair directly on HA host with `DisplayOnly` agent | Bond persists in host BlueZ storage |
-| ESPHome Bluetooth Proxy (`esp-idf`) | Verified working | Temporary OTA flash with [examples/esphome-pair-helper.yaml](examples/esphome-pair-helper.yaml), then restore stock firmware | Bond persists in ESP32 NVS flash across OTA updates; **Automatic** remembers the bonded proxy (or pin manually in **Configure**) |
+| ESPHome Bluetooth Proxy (`esp-idf`) | Verified working | Drop-in package [examples/esphome-pair-package.yaml](examples/esphome-pair-package.yaml) (adds a **Pair Power NI Meter** button in HA) | Bond persists in ESP32 NVS flash across OTA updates; **Automatic** remembers the bonded proxy (or pin manually in **Configure**) |
 
 ## Prerequisites: One-Time 6-Digit PIN Pairing
 
@@ -90,13 +90,27 @@ If your Freedom Unit is within range of your Home Assistant server's built-in Bl
 <details>
 <summary><strong>Option B: ESPHome Bluetooth Proxy (e.g., ESP32 / Everything Presence Lite)</strong></summary>
 
-Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 6-digit PIN. However, ESP-IDF stores BLE bonds persistently in NVS flash (`CONFIG_BT_BLE_SMP_BOND_NVS_FLASH=y`), which survives OTA firmware updates:
+Stock ESPHome `bluetooth_proxy` uses `io_capability: none` and cannot display a 6-digit PIN, but ESP-IDF stores BLE bonds persistently in NVS flash (`CONFIG_BT_BLE_SMP_BOND_NVS_FLASH=y`) across OTA updates. Using the drop-in package keeps your existing board, Wi-Fi, and sensors intact:
 
-1. Keep your stock ESPHome proxy firmware ready to re-flash afterward.
-2. Temporarily OTA-flash the target ESP32 using [examples/esphome-pair-helper.yaml](examples/esphome-pair-helper.yaml) (updated with your Freedom Unit's MAC address, API key, and your chosen 6-digit PIN).
-3. Watch the ESPHome logs until `=== ENTER PASSKEY ON FREEDOM UNIT: 123456# ===` appears, then type that 6-digit PIN followed by `#` on your Freedom Unit keypad.
-4. Flash your normal ESPHome Bluetooth Proxy firmware back onto the ESP32 — the BLE bond remains saved in NVS flash.
-5. **Automatic** proxy selection remembers and reuses that bonded proxy after the first successful poll, or you can open **Configure** on **Power NI Keypad+** and pin **Bluetooth proxy / adapter** explicitly.
+1. Add these lines to your existing ESPHome Bluetooth Proxy YAML (using your Freedom Unit's MAC address and any 6-digit PIN you choose):
+   ```yaml
+   substitutions:
+     powerni_mac: "AA:BB:CC:DD:EE:FF"
+     powerni_pin: "123456"
+
+   packages:
+     powerni_pair:
+       url: https://github.com/rorygallagher2024/ha-powerni-ble
+       ref: main
+       files: [examples/esphome-pair-package.yaml]
+   ```
+2. Install (OTA) onto the ESP32 proxy.
+3. In Home Assistant, open that ESPHome device and press **Pair Power NI Meter**.
+4. When **Power NI Pairing Status** shows `Enter 123456# on keypad`, type that 6-digit PIN followed by `#` on your physical Freedom Unit keypad.
+5. Wait ~35 seconds until status reports **`Bonded! Safe to remove pairing package`**, then remove the `substitutions:` / `packages:` lines and install again — the BLE bond remains saved in NVS flash.
+6. **Automatic** proxy selection remembers and reuses that bonded proxy after the first successful poll, or you can open **Configure** on **Power NI Keypad+** and pin **Bluetooth proxy / adapter** explicitly.
+
+*(Setting up a blank ESP32 outside an existing config? A standalone minimal firmware is also available in [examples/esphome-pair-helper.yaml](examples/esphome-pair-helper.yaml).)*
 
 </details>
 

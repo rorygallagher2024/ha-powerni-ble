@@ -1,5 +1,11 @@
-# Temporary ESPHome firmware used ONCE to bond an ESP32 with a Power NI
-# Freedom Unit using a 6-digit MITM passkey, storing the bond in ESP32 NVS flash.
+# Standalone temporary ESPHome firmware used ONCE to bond a blank ESP32 with
+# a Power NI Freedom Unit using a 6-digit MITM passkey, storing the bond in
+# ESP32 NVS flash.
+#
+# Tip: If you already manage your ESPHome Bluetooth Proxy in the ESPHome
+# Dashboard, prefer the drop-in `examples/esphome-pair-package.yaml` instead —
+# it keeps your existing board, Wi-Fi, and sensors intact and adds a
+# "Pair Power NI Meter" button directly in Home Assistant.
 #
 # Usage:
 # 1. Back up / keep your normal stock ESPHome firmware binary handy so you can

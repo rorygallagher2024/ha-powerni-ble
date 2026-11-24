@@ -3,7 +3,7 @@
     "step": {
       "bluetooth_confirm": {
         "title": "Confirm Power NI Keypad+ Meter",
-        "description": "Set up {name} ({address}) with Home Assistant?"
+        "description": "Set up **{name}** (`{address}`) with Home Assistant?\n\n**Seen by:** {scanners}\n\nPower NI Freedom Units require a one-time 6-digit PIN bond on the Bluetooth adapter or ESPHome proxy connecting to them. If the meter stops advertising during pairing, enter `{reset_code}` on its keypad."
       },
       "user": {
         "title": "Select Power NI Keypad+ Meter",
