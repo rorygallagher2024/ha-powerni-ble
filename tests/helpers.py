@@ -109,6 +109,7 @@ def make_sample_meter_data(**overrides: Any) -> PowerNIMeterData:
         "current_load_kw": 0.485,
         "current_cost_per_hour": 0.14,
         "total_import_kwh": 11410,
+        "unit_rate": 0.33285,
         "yesterday_cost": 2.77,
         "last_7_days_cost": 20.15,
         "last_month_cost": 65.05,

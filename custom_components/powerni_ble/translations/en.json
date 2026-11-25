@@ -59,6 +59,9 @@
       "total_import_energy": {
         "name": "Total import energy"
       },
+      "unit_rate": {
+        "name": "Unit rate"
+      },
       "yesterday_spend": {
         "name": "Yesterday's spend"
       },

@@ -28,6 +28,7 @@ RSP_DISCONNECT_ACK = bytes([0x55, 0xCC, 0x02, 0x32])
 CMD_DISPLAY_RESET = bytes([0xC2, 0x30])
 CMD_GET_BALANCE = bytes([0xC2, 0x31])
 CMD_PREV_USAGE = bytes([0xC2, 0x32])
+CMD_UNIT_RATE = bytes([0xC2, 0x33])
 CMD_TOTAL_CONSUMPTION = bytes([0xC2, 0x36])
 CMD_TOTAL_UNITS = bytes([0xC2, 0x39])
 
@@ -104,12 +105,16 @@ POLL_STATUS_OPTIONS: tuple[str, ...] = (
 SECTION_BALANCE = "balance"
 SECTION_LIVE = "live"  # current kW load and £/hr
 SECTION_UNITS = "units"  # cumulative import kWh
+SECTION_RATE = "rate"  # active unit rate (GBP/kWh)
 SECTION_SPEND = "spend"  # yesterday / last 7 days / last month
-ALL_SECTIONS = frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS, SECTION_SPEND})
+ALL_SECTIONS = frozenset(
+    {SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS, SECTION_RATE, SECTION_SPEND}
+)
 
 # Maximum age before a slow section is read again.
 SECTION_REFRESH_INTERVALS = {
     SECTION_UNITS: timedelta(hours=1),
+    SECTION_RATE: timedelta(hours=6),
     SECTION_SPEND: timedelta(hours=6),
 }
 
@@ -122,8 +127,8 @@ def sections_due(
     """Return the reading groups to fetch on this poll.
 
     A slow section is due when it has never been read, its refresh interval
-    has elapsed, or (for daily spend figures) the local date has changed
-    since it was last read.
+    has elapsed, or (for daily spend/tariff figures) the local date has
+    changed since it was last read.
     """
     if force_full:
         return ALL_SECTIONS
@@ -133,7 +138,7 @@ def sections_due(
         if (
             last is None
             or now - last >= max_age
-            or (section == SECTION_SPEND and now.date() != last.date())
+            or (section in (SECTION_SPEND, SECTION_RATE) and now.date() != last.date())
         ):
             due.add(section)
     return frozenset(due)

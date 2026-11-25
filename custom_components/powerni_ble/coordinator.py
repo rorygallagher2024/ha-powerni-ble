@@ -62,6 +62,7 @@ from .const import (
     POLL_TIMEOUT_SECONDS,
     RSSI_MEDIAN_WINDOW,
     RSSI_MIN_PUBLISH_INTERVAL_SECONDS,
+    SECTION_RATE,
     SECTION_SPEND,
     SECTION_UNITS,
     SESSION_RETRY_ATTEMPTS,
@@ -444,6 +445,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         """Record which slow groups this read actually returned values for."""
         if data.total_import_kwh is not None:
             self._section_last_read[SECTION_UNITS] = now
+        if data.unit_rate is not None:
+            self._section_last_read[SECTION_RATE] = now
         if any(
             value is not None
             for value in (

@@ -30,6 +30,7 @@ from custom_components.powerni_ble.const import (
     POLL_STATUS_IDLE,
     POLL_STATUS_WAITING,
     RSSI_MIN_PUBLISH_INTERVAL_SECONDS,
+    SECTION_RATE,
     SECTION_SPEND,
     SECTION_UNITS,
     SURVEY_INCREMENTAL_DAYS,
@@ -506,6 +507,7 @@ def test_section_tracking_helpers() -> None:
     assert coord._section_last_read == {}
     coord._mark_sections_read(make_sample_meter_data(), ts)
     assert coord._section_last_read[SECTION_UNITS] == ts
+    assert coord._section_last_read[SECTION_RATE] == ts
     assert coord._section_last_read[SECTION_SPEND] == ts
 
 

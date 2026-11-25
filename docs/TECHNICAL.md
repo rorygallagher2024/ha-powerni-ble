@@ -11,7 +11,7 @@ Low-level Bluetooth protocol details, Home Assistant entity metadata, polling in
 - **Discovery matching:** Matches advertisements carrying the ISSC service UUID (`49535343-fe7d-4ae5-8fa9-9fafd205e455`) or advertised local names matching `^((?:[A-Z]{3}\d{5})|(?:B\d{7}))$`.
 - **Authentication:** Requires `LE Legacy + MITM` 6-digit passkey bonding (`ESP_LE_AUTH_REQ_BOND_MITM` / `DisplayOnly` I/O capability).
 - **Transparent mode & LCD queries:**
-  - Enters transparent mode (`55 BB 01 44` → ACK `55 CC 01 33`), queries balance, live load, cumulative kWh, and spend buckets, sends keepalive (`55 BB 03 42`) before slow sections, and exits cleanly (`55 BB 02 43` → ACK `55 CC 02 32`) in a `finally` block before calling `stop_notify` and `disconnect`.
+  - Enters transparent mode (`55 BB 01 44` → ACK `55 CC 01 33`), queries balance, live load, cumulative kWh (`0xC2 0x39`), active tariff unit rate (`0xC2 0x33` → `R1 PRICE` in pence converted to `GBP/kWh`), and spend buckets (`0xC2 0x32`), sends keepalive (`55 BB 03 42`) before slow sections, and exits cleanly (`55 BB 02 43` → ACK `55 CC 02 32`) in a `finally` block before calling `stop_notify` and `disconnect`.
 - **Energy history (`0xA0` survey):**
   - Reads up to 14 days of 13-block 30-minute counter data (`0xA0` / `0xF1`, `0.00625 kWh` per count).
   - Completed hourly totals are written to an isolated recorder external statistic (`powerni_ble:<mac>_energy_history`, `unit_of_measurement="kWh"`, `has_sum=True`) via `async_add_external_statistics`.
@@ -43,6 +43,7 @@ Stock ESPHome `bluetooth_proxy` compiles with `io_capability: none`, so it canno
 | **Current load** | `sensor` | Primary | `kW` | `power` / `measurement` |
 | **Current cost rate** | `sensor` | Primary | `GBP/h` | — / `measurement` |
 | **Total import energy** | `sensor` | Primary | `kWh` | `energy` / `total_increasing` |
+| **Unit rate** | `sensor` | Primary | `GBP/kWh` | — / `measurement` |
 | **Yesterday's spend** | `sensor` | Primary | `GBP` | `monetary` / `total` |
 | **Last 7 days spend** | `sensor` | Primary | `GBP` | `monetary` / `total` |
 | **Last month spend** | `sensor` | Primary | `GBP` | `monetary` / `total` |
