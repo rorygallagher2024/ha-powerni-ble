@@ -25,7 +25,7 @@
 </div>
 
 > [!NOTE]
-> **Unofficial / Independent Project:** This integration is not affiliated with, endorsed by, or supported by Power NI, Energia Group, or Eckoh. It communicates **locally and read-only** over Bluetooth with your own Freedom Unit (either directly from your Home Assistant server or via a nearby Bluetooth bridge). It never contacts Power NI servers and cannot top up or change your meter.
+> **Unofficial / Independent Project:** This integration is not affiliated with, endorsed by, or supported by Power NI, NIE Networks, Energia Group, or Eckoh. It communicates **locally and read-only** over Bluetooth with your own Freedom Unit (either directly from your Home Assistant server or via a nearby Bluetooth bridge). It never contacts Power NI servers and cannot top up or change your meter.
 
 ## Highlights
 
@@ -46,6 +46,8 @@
 - **Home Assistant:** Requires **`2026.10.0`** or newer (tested live on **`2026.11.1`**).
 
 ### Supported Keypads
+
+Freedom Units are owned and installed by NIE Networks; the Bluetooth (Keypad+) upgrade is currently offered by Power NI.
 
 | Keypad Serial | Status | Bluetooth Reset Code | Notes |
 | --- | --- | --- | --- |
