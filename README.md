@@ -194,7 +194,7 @@ Or install directly from the UI:
 <p align="center">
   <img src="docs/images/device-page.png" alt="Power NI Keypad+ device page in Home Assistant" width="520" />
   <br />
-  <em>Home Assistant device page showing live readings, the Refresh button, and adjustable Poll interval.</em>
+  <em>Home Assistant device page showing live readings, Unit rate, Refresh, Sync energy history, and adjustable Poll interval.</em>
 </p>
 
 ## Energy Dashboard
