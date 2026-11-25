@@ -38,6 +38,7 @@ EXPECTED_ENTITIES: dict[str, tuple[str, EntityCategory | None]] = {
     f"{TEST_ADDRESS}_current_load_kw": ("B1234567 Current load", None),
     f"{TEST_ADDRESS}_current_cost_per_hour": ("B1234567 Current cost rate", None),
     f"{TEST_ADDRESS}_total_import_kwh": ("B1234567 Total import energy", None),
+    f"{TEST_ADDRESS}_unit_rate": ("B1234567 Unit rate", None),
     f"{TEST_ADDRESS}_yesterday_cost": ("B1234567 Yesterday's spend", None),
     f"{TEST_ADDRESS}_last_7_days_cost": ("B1234567 Last 7 days spend", None),
     f"{TEST_ADDRESS}_last_month_cost": ("B1234567 Last month spend", None),
@@ -65,7 +66,7 @@ EXPECTED_ENTITIES: dict[str, tuple[str, EntityCategory | None]] = {
 async def test_setup_entities_actions_and_unload(
     hass: HomeAssistant, enable_bluetooth: None
 ) -> None:
-    """Full entry setup registers 17 translated entities and supports controls + unload."""
+    """Full entry setup registers 18 translated entities and supports controls + unload."""
     sample = make_sample_meter_data()
     fake_client = MagicMock(is_connected=True, disconnect=AsyncMock())
     scanner = make_scanner_device(rssi=-73)
@@ -90,7 +91,7 @@ async def test_setup_entities_actions_and_unload(
 
     entity_reg = er.async_get(hass)
     entries = er.async_entries_for_config_entry(entity_reg, entry.entry_id)
-    assert len(entries) == 17
+    assert len(entries) == 18
 
     by_unique_id = {ent.unique_id: ent for ent in entries}
     assert set(by_unique_id) == set(EXPECTED_ENTITIES)
@@ -106,6 +107,13 @@ async def test_setup_entities_actions_and_unload(
     assert balance_state is not None
     assert balance_state.state == "24.5"
     assert "last_read" in balance_state.attributes
+
+    unit_rate_state = hass.states.get(
+        by_unique_id[f"{TEST_ADDRESS}_unit_rate"].entity_id
+    )
+    assert unit_rate_state is not None
+    assert unit_rate_state.state == "0.33285"
+    assert unit_rate_state.attributes["unit_of_measurement"] == "GBP/kWh"
 
     days_left_state = hass.states.get(
         by_unique_id[f"{TEST_ADDRESS}_days_left"].entity_id

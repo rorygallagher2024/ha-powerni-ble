@@ -111,6 +111,16 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
         value_fn=lambda data: data.total_import_kwh,
     ),
     PowerNISensorEntityDescription(
+        key="unit_rate",
+        translation_key="unit_rate",
+        device_class=None,
+        native_unit_of_measurement="GBP/kWh",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=5,
+        icon="mdi:tag-outline",
+        value_fn=lambda data: data.unit_rate,
+    ),
+    PowerNISensorEntityDescription(
         key="yesterday_cost",
         translation_key="yesterday_spend",
         device_class=SensorDeviceClass.MONETARY,

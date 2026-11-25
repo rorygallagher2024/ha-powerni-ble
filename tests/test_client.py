@@ -49,6 +49,7 @@ from custom_components.powerni_ble.const import (  # noqa: E402
     CMD_SURVEY_NEXT,
     CMD_TOTAL_CONSUMPTION,
     CMD_TOTAL_UNITS,
+    CMD_UNIT_RATE,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     MAX_SCAN_INTERVAL_MINUTES,
     MIN_SCAN_INTERVAL_MINUTES,
@@ -61,6 +62,7 @@ from custom_components.powerni_ble.const import (  # noqa: E402
     RSP_TRANSPARENT_ACK,
     SECTION_BALANCE,
     SECTION_LIVE,
+    SECTION_RATE,
     SECTION_SPEND,
     SECTION_UNITS,
     WRITE_UUID,
@@ -201,13 +203,14 @@ def full_script() -> dict[bytes, list[list[bytes]]]:
             [encode_lcd("ACCOUNT"), encode_lcd("01 #14.25")],
             [encode_lcd("ABOUT 12")],
         ],
-        CMD_DISPLAY_RESET: [[encode_lcd("%%%%%%%%%")] for _ in range(4)],
+        CMD_DISPLAY_RESET: [[encode_lcd("%%%%%%%%%")] for _ in range(5)],
         CMD_TOTAL_CONSUMPTION: [
             [encode_lcd("KW  LOAD"), encode_lcd("KW  0.452")],
             [encode_lcd("LOAD COST"), encode_lcd(" #0.14/HR")],
         ],
         CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
         CMD_TOTAL_UNITS: [[encode_lcd("12345 IMP UNITS")]],
+        CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
         CMD_PREV_USAGE: [
             [encode_lcd("PREV DAY")],
             [encode_lcd("   #3.20")],
@@ -238,8 +241,9 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.balance, 14.25)
         self.assertEqual(data.current_load_kw, 0.452)
         self.assertIsNone(data.total_import_kwh)
+        self.assertIsNone(data.unit_rate)
         self.assertIsNone(data.yesterday_cost)
-        for cmd in (CMD_KEEPALIVE, CMD_TOTAL_UNITS, CMD_PREV_USAGE):
+        for cmd in (CMD_KEEPALIVE, CMD_TOTAL_UNITS, CMD_UNIT_RATE, CMD_PREV_USAGE):
             self.assertNotIn(cmd, sent)
         self.assertEqual(client.writes[-1][1], CMD_LEAVE_TRANSPARENT)
 
@@ -258,7 +262,9 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         sent = {w[1] for w in client.writes}
         self.assertIn(CMD_KEEPALIVE, sent)
         self.assertNotIn(CMD_TOTAL_UNITS, sent)
+        self.assertNotIn(CMD_UNIT_RATE, sent)
         self.assertIsNone(data.total_import_kwh)
+        self.assertIsNone(data.unit_rate)
         self.assertEqual(data.last_month_cost, 89.10)
 
     async def test_full_meter_poll(self) -> None:
@@ -273,6 +279,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
             ],
             CMD_TOTAL_CONSUMPTION: [
                 [encode_lcd("KW  LOAD"), encode_lcd("KW  0.452")],
@@ -280,6 +287,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
             CMD_TOTAL_UNITS: [[encode_lcd("12345 IMP UNITS")]],
+            CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd("PREV DAY")],
                 [encode_lcd("   #3.20")],
@@ -303,6 +311,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.current_load_kw, 0.452)
         self.assertEqual(data.current_cost_per_hour, 0.14)
         self.assertEqual(data.total_import_kwh, 12345)
+        self.assertEqual(data.unit_rate, 0.33285)
         self.assertEqual(data.yesterday_cost, 3.20)
         self.assertEqual(data.last_7_days_cost, 21.45)
         self.assertEqual(data.last_month_cost, 89.10)
@@ -322,6 +331,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
             ],
             CMD_TOTAL_CONSUMPTION: [
                 [encode_lcd("KW -0.250")],
@@ -329,6 +339,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
             CMD_TOTAL_UNITS: [[encode_lcd("987 IMP UNITS")]],
+            CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  30P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd("PREV DAY")],
                 [encode_lcd("  -#1.10")],
@@ -349,6 +360,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.current_load_kw, -0.25)
         self.assertEqual(data.current_cost_per_hour, 0.0)
         self.assertEqual(data.total_import_kwh, 987)
+        self.assertEqual(data.unit_rate, 0.3)
         self.assertEqual(data.yesterday_cost, -1.10)
         self.assertIsNone(data.last_7_days_cost)
         self.assertIsNone(data.last_month_cost)
@@ -365,6 +377,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
             ],
             CMD_TOTAL_CONSUMPTION: [
                 [encode_lcd_pair("KW  LOAD", "KW  0.51")],
@@ -372,6 +385,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
             CMD_TOTAL_UNITS: [[encode_lcd("IMP UNITS"), encode_lcd("12345")]],
+            CMD_UNIT_RATE: [[encode_lcd_pair("R1 PRICE ", "  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd_pair("PREV DAY", "  #2.77")],
                 [encode_lcd("PREV WEEK")],
@@ -394,6 +408,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.current_load_kw, 0.51)
         self.assertEqual(data.current_cost_per_hour, 0.16)
         self.assertEqual(data.total_import_kwh, 12345)
+        self.assertEqual(data.unit_rate, 0.33285)
         self.assertEqual(data.yesterday_cost, 2.77)
         self.assertEqual(data.last_7_days_cost, 20.15)
         self.assertEqual(data.last_month_cost, 65.05)
@@ -410,6 +425,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
             ],
             CMD_TOTAL_CONSUMPTION: [
                 [encode_lcd("KW  0.51")],
@@ -417,6 +433,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
             CMD_TOTAL_UNITS: [[encode_lcd_pair("12345", "IMP UNITS")]],
+            CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd_pair("PREV DAY", "  #2.77")],
                 [encode_lcd_pair("PREV WEEK", "  #20.15")],
@@ -435,6 +452,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.days_left, 12)
         self.assertEqual(data.days_left_status, "ABOUT 12")
         self.assertEqual(data.total_import_kwh, 12345)
+        self.assertEqual(data.unit_rate, 0.33285)
         self.assertEqual(data.yesterday_cost, 2.77)
         self.assertEqual(data.last_7_days_cost, 20.15)
         self.assertEqual(data.last_month_cost, 65.05)
@@ -451,6 +469,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
             ],
             CMD_TOTAL_CONSUMPTION: [
                 [encode_lcd("KW   0.40")],
@@ -458,6 +477,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
             CMD_TOTAL_UNITS: [[encode_lcd_pair("11407", "IMP UNITS")]],
+            CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd("PREV DAY"), encode_lcd("   #2.77")],
                 [encode_lcd("PREV WEEK"), encode_lcd("  #20.15")],
@@ -476,6 +496,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.days_left, 51)
         self.assertEqual(data.days_left_status, "ABOUT 51")
         self.assertEqual(data.total_import_kwh, 11407)
+        self.assertEqual(data.unit_rate, 0.33285)
 
     async def test_transparent_timeout_cleans_up(self) -> None:
         client = FakeBleakClient({})
@@ -622,12 +643,17 @@ class TestSectionsDue(unittest.TestCase):
         self.assertEqual(sections_due(self.NOW, {}), ALL_SECTIONS)
 
     def test_force_full(self) -> None:
-        last = {SECTION_UNITS: self.NOW, SECTION_SPEND: self.NOW}
+        last = {
+            SECTION_UNITS: self.NOW,
+            SECTION_RATE: self.NOW,
+            SECTION_SPEND: self.NOW,
+        }
         self.assertEqual(sections_due(self.NOW, last, force_full=True), ALL_SECTIONS)
 
     def test_recent_reads_skip_slow_sections(self) -> None:
         last = {
             SECTION_UNITS: self.NOW - timedelta(minutes=30),
+            SECTION_RATE: self.NOW - timedelta(hours=2),
             SECTION_SPEND: self.NOW - timedelta(hours=2),
         }
         self.assertEqual(
@@ -637,24 +663,29 @@ class TestSectionsDue(unittest.TestCase):
     def test_units_hourly_spend_six_hourly(self) -> None:
         last = {
             SECTION_UNITS: self.NOW - timedelta(minutes=61),
+            SECTION_RATE: self.NOW - timedelta(hours=5),
             SECTION_SPEND: self.NOW - timedelta(hours=5),
         }
         self.assertEqual(
             sections_due(self.NOW, last),
             frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS}),
         )
+        last[SECTION_RATE] = self.NOW - timedelta(hours=6)
         last[SECTION_SPEND] = self.NOW - timedelta(hours=6)
-        self.assertIn(SECTION_SPEND, sections_due(self.NOW, last))
+        due = sections_due(self.NOW, last)
+        self.assertIn(SECTION_RATE, due)
+        self.assertIn(SECTION_SPEND, due)
 
     def test_spend_due_after_midnight(self) -> None:
         now = datetime(2026, 11, 23, 0, 5, tzinfo=UTC)
         last = {
             SECTION_UNITS: now - timedelta(minutes=5),
+            SECTION_RATE: now - timedelta(minutes=20),
             SECTION_SPEND: now - timedelta(minutes=20),
         }
         self.assertEqual(
             sections_due(now, last),
-            frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_SPEND}),
+            frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_RATE, SECTION_SPEND}),
         )
 
 
@@ -750,6 +781,7 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
                 [encode_lcd("%%%%%%%%%")],
+                [encode_lcd("%%%%%%%%%")],
             ],
             CMD_TOTAL_CONSUMPTION: [
                 [encode_lcd("KW  0.452")],
@@ -757,6 +789,7 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
             CMD_TOTAL_UNITS: [[encode_lcd("12345 IMP UNITS")]],
+            CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd("PREV DAY")],
                 [encode_lcd("   #3.20")],
@@ -778,7 +811,7 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
                 on_progress=snapshots.append,
             )
 
-        self.assertEqual(len(snapshots), 3)
+        self.assertEqual(len(snapshots), 4)
         # Snapshot 1: only balance/days left delta
         self.assertEqual(snapshots[0].balance, 14.25)
         self.assertEqual(snapshots[0].days_left, 12)
@@ -793,7 +826,12 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(snapshots[2].balance)
         self.assertIsNone(snapshots[2].current_load_kw)
         self.assertEqual(snapshots[2].total_import_kwh, 12345)
-        self.assertIsNone(snapshots[2].yesterday_cost)
+        self.assertIsNone(snapshots[2].unit_rate)
+        # Snapshot 4: only unit rate delta
+        self.assertIsNone(snapshots[3].balance)
+        self.assertEqual(snapshots[3].unit_rate, 0.33285)
+        self.assertIsNone(snapshots[3].yesterday_cost)
+        self.assertEqual(final.unit_rate, 0.33285)
         self.assertEqual(final.yesterday_cost, 3.20)
         self.assertEqual(final.last_month_cost, 89.10)
 

@@ -167,6 +167,7 @@ Or install directly from the UI:
 | **Current load** | Live electricity power draw | `kW` |
 | **Current cost rate** | Current hourly cost at your live load | `GBP/h` |
 | **Total import energy** | Cumulative meter reading (works with the Energy Dashboard) | `kWh` |
+| **Unit rate** | Active electricity unit price (ready for Energy Dashboard pricing) | `GBP/kWh` |
 | **Yesterday's spend** | Electricity spent yesterday | `GBP` |
 | **Last 7 days spend** | Rolling 7-day electricity spend | `GBP` |
 | **Last month spend** | Previous month electricity spend | `GBP` |
@@ -205,7 +206,7 @@ The integration gives you two ways to add your meter to Home Assistant's **Energ
 
 1. Open **Settings → Dashboards → Energy**.
 2. Choose the section matching your setup:
-   - **Electricity grid → Add consumption:** Select **Total import energy** (or **`<meter> Energy history`** for smoother hourly bars) to track grid import alongside solar or battery systems, and optionally add your unit tariff price (`GBP/kWh`).
+   - **Electricity grid → Add consumption:** Select **Total import energy** (or **`<meter> Energy history`** for smoother hourly bars) to track grid import alongside solar or battery systems. Under tariff pricing, choose **Use an entity with current price** and pick **`Unit rate`** (`GBP/kWh`) so Home Assistant updates your costs automatically if your rate changes.
    - **Home consumption:** Select **Total import energy** (or **`<meter> Energy history`**) under **Home energy** and optionally **Current load** under **Home power**, then click **Save**.
 3. Wait 1–2 hours for hourly bars to appear (historical **Energy history** bars show up right after the first sync).
 
@@ -323,6 +324,7 @@ The Freedom Unit only allows one Bluetooth connection at a time, so Home Assista
 | **Balance** & **Days left** | Every poll | Always read first |
 | **Current load** & **Current cost rate** | Every poll | Live demand and hourly cost |
 | **Total import energy** | Once per hour | Also read on startup and **Refresh** |
+| **Unit rate** | Every 6 hours & after midnight | Also read on startup and **Refresh** |
 | **Yesterday / Last 7 days / Last month spend** | Every 6 hours & after midnight | Also read on startup and **Refresh** |
 | **14-day hourly energy history** | Every 6 hours (background) | Fills in detailed hourly bars for the Energy Dashboard |
 

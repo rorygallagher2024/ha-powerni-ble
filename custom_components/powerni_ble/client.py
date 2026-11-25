@@ -23,6 +23,7 @@ from .const import (
     CMD_SURVEY_NEXT,
     CMD_TOTAL_CONSUMPTION,
     CMD_TOTAL_UNITS,
+    CMD_UNIT_RATE,
     NOTIFY_UUID,
     RSP_DISCONNECT_ACK,
     RSP_KEEPALIVE_ACK,
@@ -31,6 +32,7 @@ from .const import (
     RSP_SURVEY_END,
     RSP_TRANSPARENT_ACK,
     SECTION_LIVE,
+    SECTION_RATE,
     SECTION_SPEND,
     SECTION_UNITS,
     SURVEY_BLOCK_SIZE,
@@ -51,7 +53,7 @@ CONTROL_FRAMES = (
     RSP_DISCONNECT_ACK,
 )
 
-RE_IGNORE_HEADER = re.compile(r"(ACCOUNT|DAYS LEFT|KW  LOAD|LOAD COST)")
+RE_IGNORE_HEADER = re.compile(r"(ACCOUNT|DAYS LEFT|KW  LOAD|LOAD COST|R1 PRICE)")
 RE_RESET_ACK = re.compile(r"%%%%%%%%%")
 RE_BALANCE = re.compile(r"(?:^|\s)(\d+)\s*(-?#\d+\.\d+)")
 RE_DAYS_LEFT = re.compile(r"(?:(MATCH|OVER|ABOUT|BELOW)\s+(\d+)|(NO DATA))")
@@ -61,6 +63,7 @@ RE_BALANCE_OR_DAYS_LEFT = re.compile(
 RE_LOAD_KW = re.compile(r"KW\s*(-?\d+\.\d+)")
 RE_LOAD_COST = re.compile(r"\s*#?(\d+\.\d+)/HR")
 RE_IMP_UNITS = re.compile(r"(\d+)\s*IMP UNITS")
+RE_UNIT_RATE_PENCE = re.compile(r"(?:^|\s)(\d+(?:\.\d+)?)\s*P(?:\s|$)")
 RE_PREV_LABEL = re.compile(r"PREV ([A-Z]+)")
 RE_MONTH_USAGE = re.compile(
     r"(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*#?(\d+\.\d+)"
@@ -103,6 +106,7 @@ class PowerNIMeterData:
     current_load_kw: float | None = None
     current_cost_per_hour: float | None = None
     total_import_kwh: int | None = None
+    unit_rate: float | None = None
     yesterday_cost: float | None = None
     last_7_days_cost: float | None = None
     last_month_cost: float | None = None
@@ -118,6 +122,7 @@ class PowerNIMeterData:
                 self.current_load_kw,
                 self.current_cost_per_hour,
                 self.total_import_kwh,
+                self.unit_rate,
                 self.yesterday_cost,
                 self.last_7_days_cost,
                 self.last_month_cost,
@@ -689,7 +694,11 @@ async def async_read_meter(
             )
 
         # 3. Keepalive, then cumulative import units (kWh)
-        if SECTION_UNITS in sections or SECTION_SPEND in sections:
+        if (
+            SECTION_UNITS in sections
+            or SECTION_RATE in sections
+            or SECTION_SPEND in sections
+        ):
             await _send(CMD_KEEPALIVE)
             if not await _wait_control_frame(
                 ctrl_queue, RSP_KEEPALIVE_ACK, KEEPALIVE_ACK_TIMEOUT, disconnected
@@ -712,7 +721,27 @@ async def async_read_meter(
                 )
             _emit_progress(PowerNIMeterData(total_import_kwh=data.total_import_kwh))
 
-        # 4. Recent spend (yesterday / last 7 days / last month)
+        # 4. Active unit rate (R1 PRICE in pence -> GBP/kWh)
+        if SECTION_RATE in sections:
+            await _display_reset()
+            try:
+                await _send(CMD_UNIT_RATE)
+                _, match = await _wait_matching_line(
+                    line_queue,
+                    RE_UNIT_RATE_PENCE,
+                    LINE_TIMEOUT,
+                    disconnected=disconnected,
+                )
+                assert match is not None
+                data.unit_rate = round(float(match.group(1)) / 100.0, 5)
+            except TimeoutError as err:
+                logger.warning(
+                    "Timed out reading unit rate (seen_lines=%r)",
+                    getattr(err, "seen_lines", []),
+                )
+            _emit_progress(PowerNIMeterData(unit_rate=data.unit_rate))
+
+        # 5. Recent spend (yesterday / last 7 days / last month)
         if SECTION_SPEND in sections:
             await _display_reset()
             current_bucket: str | None = None
@@ -760,13 +789,14 @@ async def async_read_meter(
 
         logger.info(
             "Power NI meter read complete: balance=%s days_left=%s (%s) "
-            "load_kw=%s cost_per_hr=%s imp_kwh=%s yesterday=%s last_7d=%s last_month=%s",
+            "load_kw=%s cost_per_hr=%s imp_kwh=%s unit_rate=%s yesterday=%s last_7d=%s last_month=%s",
             data.balance,
             data.days_left,
             data.days_left_status,
             data.current_load_kw,
             data.current_cost_per_hour,
             data.total_import_kwh,
+            data.unit_rate,
             data.yesterday_cost,
             data.last_7_days_cost,
             data.last_month_cost,
