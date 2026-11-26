@@ -59,6 +59,9 @@
       "total_import_energy": {
         "name": "Total import energy"
       },
+      "total_export_energy": {
+        "name": "Total export energy"
+      },
       "unit_rate": {
         "name": "Unit rate"
       },

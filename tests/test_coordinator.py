@@ -11,6 +11,7 @@ import pytest
 from bleak.exc import BleakCharacteristicNotFoundError, BleakError
 from homeassistant.components.recorder.statistics import StatisticMeanType
 from homeassistant.core import Event, HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -30,6 +31,9 @@ from custom_components.powerni_ble.const import (
     POLL_STATUS_IDLE,
     POLL_STATUS_WAITING,
     RSSI_MIN_PUBLISH_INTERVAL_SECONDS,
+    SECTION_BALANCE,
+    SECTION_EXPORT,
+    SECTION_LIVE,
     SECTION_RATE,
     SECTION_SPEND,
     SECTION_UNITS,
@@ -507,8 +511,98 @@ def test_section_tracking_helpers() -> None:
     assert coord._section_last_read == {}
     coord._mark_sections_read(make_sample_meter_data(), ts)
     assert coord._section_last_read[SECTION_UNITS] == ts
+    assert coord._section_last_read[SECTION_EXPORT] == ts
     assert coord._section_last_read[SECTION_RATE] == ts
     assert coord._section_last_read[SECTION_SPEND] == ts
+
+
+async def test_entity_registry_skips_disabled_sections(
+    hass: HomeAssistant,
+) -> None:
+    """Coordinator skips any section whose entities are all disabled in the registry."""
+    coord = _make_coordinator(hass)
+    entity_reg = er.async_get(hass)
+
+    # Before entities register, disabled-by-default export is excluded automatically.
+    assert coord._enabled_sections() == frozenset(
+        {SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS, SECTION_RATE, SECTION_SPEND}
+    )
+
+    keys = (
+        "balance",
+        "days_left",
+        "last_top_up",
+        "last_top_up_time",
+        "current_load_kw",
+        "current_cost_per_hour",
+        "total_import_kwh",
+        "total_export_kwh",
+        "unit_rate",
+        "yesterday_cost",
+        "last_7_days_cost",
+        "last_month_cost",
+    )
+    registered: dict[str, er.RegistryEntry] = {}
+    for key in keys:
+        disabled_by = (
+            er.RegistryEntryDisabler.INTEGRATION
+            if key == "total_export_kwh"
+            else None
+        )
+        registered[key] = entity_reg.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            f"{TEST_ADDRESS}_{key}",
+            config_entry=coord.config_entry,
+            disabled_by=disabled_by,
+        )
+
+    # Partial disable within a section keeps that section enabled.
+    entity_reg.async_update_entity(
+        registered["current_load_kw"].entity_id,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    assert SECTION_LIVE in coord._enabled_sections()
+
+    # Disabling every entity in LIVE and SPEND skips them; enabling export adds EXPORT.
+    entity_reg.async_update_entity(
+        registered["current_cost_per_hour"].entity_id,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    for key in ("yesterday_cost", "last_7_days_cost", "last_month_cost"):
+        entity_reg.async_update_entity(
+            registered[key].entity_id,
+            disabled_by=er.RegistryEntryDisabler.USER,
+        )
+    entity_reg.async_update_entity(
+        registered["total_export_kwh"].entity_id,
+        disabled_by=None,
+    )
+    assert coord._enabled_sections() == frozenset(
+        {SECTION_BALANCE, SECTION_UNITS, SECTION_EXPORT, SECTION_RATE}
+    )
+
+    # Disabling every reading entity skips the BLE poll entirely without error.
+    for key in (
+        "balance",
+        "days_left",
+        "last_top_up",
+        "last_top_up_time",
+        "total_import_kwh",
+        "total_export_kwh",
+        "unit_rate",
+    ):
+        entity_reg.async_update_entity(
+            registered[key].entity_id,
+            disabled_by=er.RegistryEntryDisabler.USER,
+        )
+    assert coord._enabled_sections() == frozenset()
+    coord.data = make_sample_meter_data()
+    with patch.object(coord, "_async_poll", AsyncMock()) as mock_poll:
+        res = await coord._async_update_data()
+    mock_poll.assert_not_awaited()
+    assert res == coord.data
+    assert coord.poll_status == POLL_STATUS_IDLE
 
 
 async def test_auto_sticky_proxy_and_pairing_repair_lifecycle(
