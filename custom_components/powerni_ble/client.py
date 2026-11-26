@@ -477,45 +477,68 @@ async def _enter_transparent_mode(
     raw_notifies: list[str],
     logger: logging.Logger,
     disconnected: asyncio.Event | None,
+    *,
+    prefer_write_with_response: bool = False,
 ) -> bool:
     """Enter transparent mode and return whether writes require response=True."""
-    logger.debug("Sending ENTER_TRANSPARENT_MODE")
+    logger.debug(
+        "Sending ENTER_TRANSPARENT_MODE (prefer_write_with_response=%s)",
+        prefer_write_with_response,
+    )
     _check_connected(client, disconnected)
-    await client.write_gatt_char(WRITE_UUID, CMD_ENTER_TRANSPARENT, response=False)
+    await client.write_gatt_char(
+        WRITE_UUID, CMD_ENTER_TRANSPARENT, response=prefer_write_with_response
+    )
     got_ack = await _wait_control_frame(
         ctrl_queue, RSP_TRANSPARENT_ACK, TRANSPARENT_ACK_TIMEOUT, disconnected
     )
     if got_ack:
         logger.info("Entered transparent mode on Power NI meter")
-        return False
+        return prefer_write_with_response
 
     summary, write_char, notify_char = _summarize_services(client)
     logger.warning(
-        "Transparent ACK (response=False) timed out; raw_notifies(%d)=%s; notify_char=%s; gatt=[%s]",
+        "Transparent ACK (response=%s) timed out; raw_notifies(%d)=%s; notify_char=%s; gatt=[%s]",
+        prefer_write_with_response,
         len(raw_notifies),
         raw_notifies,
         _format_char(notify_char),
         summary,
     )
-    if write_char is not None and "write" in getattr(
-        write_char, "properties", ()
-    ):
+
+    fallback_response = not prefer_write_with_response
+    can_try_fallback = (
+        True
+        if not fallback_response
+        else (
+            write_char is not None
+            and "write" in getattr(write_char, "properties", ())
+        )
+    )
+    if can_try_fallback:
         try:
             _check_connected(client, disconnected)
             await client.write_gatt_char(
-                WRITE_UUID, CMD_ENTER_TRANSPARENT, response=True
+                WRITE_UUID, CMD_ENTER_TRANSPARENT, response=fallback_response
             )
-            logger.warning(
-                "Write-with-response succeeded for ENTER_TRANSPARENT_MODE; waiting 2.5s for 55 cc 01 33"
+            logger.debug(
+                "Fallback ENTER_TRANSPARENT_MODE (response=%s) sent; waiting 2.5s for 55 cc 01 33",
+                fallback_response,
             )
             got_ack = await _wait_control_frame(
                 ctrl_queue, RSP_TRANSPARENT_ACK, 2.5, disconnected
             )
             if got_ack:
-                logger.info("Entered transparent mode on Power NI meter")
-                return True
+                if fallback_response:
+                    logger.info(
+                        "Entered transparent mode on Power NI meter (write-with-response)"
+                    )
+                else:
+                    logger.info("Entered transparent mode on Power NI meter")
+                return fallback_response
             logger.warning(
-                "Write-with-response ACK still timed out; raw_notifies(%d)=%s",
+                "Fallback transparent ACK (response=%s) still timed out; raw_notifies(%d)=%s",
+                fallback_response,
                 len(raw_notifies),
                 raw_notifies,
             )
@@ -523,7 +546,10 @@ async def _enter_transparent_mode(
             raise
         except Exception as err:
             logger.warning(
-                "Write-with-response error: %s: %s", type(err).__name__, err
+                "Fallback write (response=%s) error: %s: %s",
+                fallback_response,
+                type(err).__name__,
+                err,
             )
     else:
         logger.warning(
@@ -542,12 +568,16 @@ async def _leave_transparent_mode(
     notify_started: bool,
     logger: logging.Logger,
     disconnected: asyncio.Event | None,
+    *,
+    write_with_response: bool = False,
 ) -> None:
     """Exit transparent mode and stop GATT notifications if still connected."""
     if _is_disconnected(client, disconnected):
         return
     try:
-        await client.write_gatt_char(WRITE_UUID, CMD_LEAVE_TRANSPARENT, response=False)
+        await client.write_gatt_char(
+            WRITE_UUID, CMD_LEAVE_TRANSPARENT, response=write_with_response
+        )
         await _wait_control_frame(
             ctrl_queue, RSP_DISCONNECT_ACK, DISCONNECT_ACK_TIMEOUT
         )
@@ -566,6 +596,8 @@ async def async_read_meter(
     sections: frozenset[str] = ALL_SECTIONS,
     disconnected: asyncio.Event | None = None,
     on_progress: Callable[[PowerNIMeterData], None] | None = None,
+    prefer_write_with_response: bool = False,
+    on_write_mode: Callable[[bool], None] | None = None,
 ) -> PowerNIMeterData:
     """Run one transparent-mode telemetry poll against a connected Freedom Unit.
 
@@ -581,7 +613,7 @@ async def async_read_meter(
     line_queue: asyncio.Queue[str] = asyncio.Queue()
     raw_notifies: list[str] = []
     notify_started = False
-    write_with_response = False
+    write_with_response = prefer_write_with_response
 
     def _on_notify(_sender: Any, payload: bytearray) -> None:
         raw = bytes(payload)
@@ -628,8 +660,15 @@ async def async_read_meter(
 
     try:
         write_with_response = await _enter_transparent_mode(
-            client, ctrl_queue, raw_notifies, logger, disconnected
+            client,
+            ctrl_queue,
+            raw_notifies,
+            logger,
+            disconnected,
+            prefer_write_with_response=prefer_write_with_response,
         )
+        if on_write_mode is not None:
+            on_write_mode(write_with_response)
 
         # 1. Balance and days remaining (meter may alternate in either order)
         if SECTION_BALANCE in sections:
@@ -849,7 +888,12 @@ async def async_read_meter(
         return data
     finally:
         await _leave_transparent_mode(
-            client, ctrl_queue, notify_started, logger, disconnected
+            client,
+            ctrl_queue,
+            notify_started,
+            logger,
+            disconnected,
+            write_with_response=write_with_response,
         )
 
 
@@ -858,6 +902,8 @@ async def async_read_survey(
     days: int = SURVEY_MAX_DAYS,
     logger: logging.Logger = _LOGGER,
     disconnected: asyncio.Event | None = None,
+    prefer_write_with_response: bool = False,
+    on_write_mode: Callable[[bool], None] | None = None,
 ) -> list[bytes]:
     """Read up to `days` of 13-block 30-minute energy survey history (0xA0)."""
     _log_gatt_services(client, logger)
@@ -869,6 +915,7 @@ async def async_read_survey(
     raw_notifies: list[str] = []
     recent_notifies: deque[str] = deque(maxlen=12)
     notify_started = False
+    write_with_response = prefer_write_with_response
 
     def _on_notify(_sender: Any, payload: bytearray) -> None:
         raw = bytes(payload)
@@ -894,8 +941,15 @@ async def async_read_survey(
 
     try:
         write_with_response = await _enter_transparent_mode(
-            client, ctrl_queue, raw_notifies, logger, disconnected
+            client,
+            ctrl_queue,
+            raw_notifies,
+            logger,
+            disconnected,
+            prefer_write_with_response=prefer_write_with_response,
         )
+        if on_write_mode is not None:
+            on_write_mode(write_with_response)
 
         async def _write(cmd: bytes, delay: float) -> None:
             if delay > 0:
@@ -1002,5 +1056,10 @@ async def async_read_survey(
         return blocks
     finally:
         await _leave_transparent_mode(
-            client, ctrl_queue, notify_started, logger, disconnected
+            client,
+            ctrl_queue,
+            notify_started,
+            logger,
+            disconnected,
+            write_with_response=write_with_response,
         )

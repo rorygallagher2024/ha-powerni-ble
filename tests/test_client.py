@@ -536,6 +536,117 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.notify_stopped)
         self.assertEqual(client.writes[-1][1], CMD_LEAVE_TRANSPARENT)
 
+    async def test_prefer_write_with_response_uses_response_true_immediately(
+        self,
+    ) -> None:
+        """When prefer_write_with_response=True, ENTER and LEAVE use response=True."""
+        client = FakeBleakClient(full_script())
+        modes: list[bool] = []
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            data = await async_read_meter(
+                client,  # type: ignore[arg-type]
+                sections=frozenset({SECTION_BALANCE}),
+                prefer_write_with_response=True,
+                on_write_mode=modes.append,
+            )
+        self.assertEqual(data.balance, 14.25)
+        self.assertEqual(modes, [True])
+        enter_writes = [w for w in client.writes if w[1] == CMD_ENTER_TRANSPARENT]
+        leave_writes = [w for w in client.writes if w[1] == CMD_LEAVE_TRANSPARENT]
+        self.assertEqual([w[2] for w in enter_writes], [True])
+        self.assertEqual([w[2] for w in leave_writes], [True])
+
+    async def test_fallback_from_response_false_to_true_remembers_mode(self) -> None:
+        """Timeout on response=False falls back to response=True and notifies caller."""
+        from types import SimpleNamespace
+
+        class ResponseFallbackClient(FakeBleakClient):
+            def __init__(self) -> None:
+                super().__init__(full_script())
+                write_char = SimpleNamespace(
+                    uuid=WRITE_UUID,
+                    handle=0x003A,
+                    properties=["write-without-response", "write"],
+                    descriptors=[],
+                )
+                service = SimpleNamespace(
+                    uuid="49535343-fe7d-4ae5-8fa9-9fafd205e455",
+                    handle=0x0030,
+                    characteristics=[write_char],
+                )
+
+                class Services:
+                    def __iter__(self):
+                        return iter([service])
+
+                    def get_characteristic(self, uuid: str):
+                        return write_char if uuid == WRITE_UUID else None
+
+                self.services = Services()
+
+            async def write_gatt_char(
+                self, uuid: str, data: bytes, response: bool = False
+            ) -> None:
+                if data == CMD_ENTER_TRANSPARENT and not response:
+                    self.writes.append((uuid, bytes(data), response))
+                    return
+                await super().write_gatt_char(uuid, data, response)
+
+        client = ResponseFallbackClient()
+        modes: list[bool] = []
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "TRANSPARENT_ACK_TIMEOUT", 0.05),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            data = await async_read_meter(
+                client,  # type: ignore[arg-type]
+                sections=frozenset({SECTION_BALANCE}),
+                prefer_write_with_response=False,
+                on_write_mode=modes.append,
+            )
+        self.assertEqual(data.balance, 14.25)
+        self.assertEqual(modes, [True])
+        enter_writes = [w for w in client.writes if w[1] == CMD_ENTER_TRANSPARENT]
+        leave_writes = [w for w in client.writes if w[1] == CMD_LEAVE_TRANSPARENT]
+        self.assertEqual([w[2] for w in enter_writes], [False, True])
+        self.assertEqual([w[2] for w in leave_writes], [True])
+
+    async def test_prefer_response_true_falls_back_to_false_on_timeout(self) -> None:
+        """Timeout on preferred response=True falls back to response=False and notifies."""
+
+        class ResponseFalseFallbackClient(FakeBleakClient):
+            async def write_gatt_char(
+                self, uuid: str, data: bytes, response: bool = False
+            ) -> None:
+                if data == CMD_ENTER_TRANSPARENT and response:
+                    self.writes.append((uuid, bytes(data), response))
+                    return
+                await super().write_gatt_char(uuid, data, response)
+
+        client = ResponseFalseFallbackClient(full_script())
+        modes: list[bool] = []
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "TRANSPARENT_ACK_TIMEOUT", 0.05),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            data = await async_read_meter(
+                client,  # type: ignore[arg-type]
+                sections=frozenset({SECTION_BALANCE}),
+                prefer_write_with_response=True,
+                on_write_mode=modes.append,
+            )
+        self.assertEqual(data.balance, 14.25)
+        self.assertEqual(modes, [False])
+        enter_writes = [w for w in client.writes if w[1] == CMD_ENTER_TRANSPARENT]
+        leave_writes = [w for w in client.writes if w[1] == CMD_LEAVE_TRANSPARENT]
+        self.assertEqual([w[2] for w in enter_writes], [True, False])
+        self.assertEqual([w[2] for w in leave_writes], [False])
+
     async def test_key9_cycles_imp_test_imp_to_exp_units(self) -> None:
         """Key 9 cycles IMP UNITS -> TEST IMP -> EXP UNITS on a solar meter."""
         script = {

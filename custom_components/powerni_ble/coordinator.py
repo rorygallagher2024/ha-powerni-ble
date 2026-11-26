@@ -104,6 +104,16 @@ def pairing_issue_id_for_address(address: str) -> str:
     return f"pairing_required_{address.lower().replace(':', '_')}"
 
 
+def _get_address_lock(hass: HomeAssistant, address: str) -> asyncio.Lock:
+    """Return a BLE connection lock shared across reloads for one meter."""
+    locks: dict[str, asyncio.Lock] = hass.data.setdefault(f"{DOMAIN}_locks", {})
+    lock = locks.get(address)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[address] = lock
+    return lock
+
+
 def _extract_ble_device_source(ble_device: BLEDevice) -> str | None:
     """Return the scanner/adapter source reported on a BLEDevice, if available."""
     details = getattr(ble_device, "details", None)
@@ -152,7 +162,9 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         self.scan_interval_minutes = clamp_scan_interval(
             config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_MINUTES)
         )
-        self._connect_lock = asyncio.Lock()
+        self._connect_lock = _get_address_lock(hass, self.address)
+        self._active_poll_task: asyncio.Task[Any] | None = None
+        self._write_with_response: bool = False
         self._consecutive_failures = 0
         # When each slow reading group was last read successfully.
         self._section_last_read: dict[str, datetime] = {}
@@ -493,6 +505,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             str(preferred).strip() or None if preferred else None
         )
         last_top_up = stored.get("last_top_up")
+        self._write_with_response = bool(stored.get("write_with_response", False))
         if last_top_up:
             at = dt_util.parse_datetime(last_top_up.get("at") or "")
             if at is not None:
@@ -517,7 +530,26 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             "last_balance": self._top_up_baseline,
             "last_top_up": last_top_up,
             "preferred_proxy_source": self._preferred_proxy_source,
+            "write_with_response": self._write_with_response,
         }
+
+    def _handle_write_mode(self, write_with_response: bool) -> None:
+        """Persist the GATT write mode that succeeded for this meter."""
+        if write_with_response != self._write_with_response:
+            self._write_with_response = write_with_response
+            self._store.async_delay_save(self._stored_state, STORE_SAVE_DELAY_SECONDS)
+
+    async def async_shutdown_ble(self) -> None:
+        """Cancel and await any active BLE poll or survey task before unload."""
+        tasks = [
+            task
+            for task in (self._active_poll_task, self._survey_task)
+            if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _check_top_up(self, balance: float | None, now: datetime) -> None:
         """Fire a top-up event when a freshly read balance rose since the last one.
@@ -693,6 +725,7 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             "Polling %s for sections: %s", self.address, ", ".join(sorted(sections))
         )
         try:
+            self._active_poll_task = asyncio.current_task()
             async with asyncio.timeout(POLL_TIMEOUT_SECONDS):
                 new_data = await self._async_poll(sections)
         except TimeoutError as err:
@@ -711,6 +744,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             self._record_result(False)
             self._set_poll_status(POLL_STATUS_ERROR, error=str(err))
             raise
+        finally:
+            self._active_poll_task = None
         self._record_result(True)
         self._force_full_read = False
         self._mark_sections_read(new_data, now)
@@ -836,6 +871,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                         days=days,
                         logger=_LOGGER,
                         disconnected=disconnected,
+                        prefer_write_with_response=self._write_with_response,
+                        on_write_mode=self._handle_write_mode,
                     )
             finally:
                 if client is not None and client.is_connected:
@@ -943,6 +980,8 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
                         sections,
                         disconnected=disconnected,
                         on_progress=self._handle_partial_progress,
+                        prefer_write_with_response=self._write_with_response,
+                        on_write_mode=self._handle_write_mode,
                     )
                     self._clear_pairing_issue()
                     if used_source and used_source != self._preferred_proxy_source:
