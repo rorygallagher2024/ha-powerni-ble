@@ -111,6 +111,15 @@ SENSORS: tuple[PowerNISensorEntityDescription, ...] = (
         value_fn=lambda data: data.total_import_kwh,
     ),
     PowerNISensorEntityDescription(
+        key="total_export_kwh",
+        translation_key="total_export_energy",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        value_fn=lambda data: data.total_export_kwh,
+    ),
+    PowerNISensorEntityDescription(
         key="unit_rate",
         translation_key="unit_rate",
         device_class=None,

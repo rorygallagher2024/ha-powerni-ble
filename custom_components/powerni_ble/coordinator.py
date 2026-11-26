@@ -29,6 +29,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -50,6 +51,7 @@ from .const import (
     CONF_SCAN_INTERVAL,
     DEFAULT_AUTO_SYNC_HISTORY,
     DEFAULT_SCAN_INTERVAL_MINUTES,
+    DISABLED_BY_DEFAULT_ENTITY_KEYS,
     DOMAIN,
     FAILURE_ADV_RECOVERY_COOLDOWN_SECONDS,
     PAIRING_LEARN_MORE_URL,
@@ -62,6 +64,8 @@ from .const import (
     POLL_TIMEOUT_SECONDS,
     RSSI_MEDIAN_WINDOW,
     RSSI_MIN_PUBLISH_INTERVAL_SECONDS,
+    SECTION_ENTITY_KEYS,
+    SECTION_EXPORT,
     SECTION_RATE,
     SECTION_SPEND,
     SECTION_UNITS,
@@ -441,10 +445,32 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
         self._force_full_read = True
         await self.async_request_refresh()
 
+    def _enabled_sections(self) -> frozenset[str]:
+        """Return sections that have at least one enabled entity in the registry."""
+        entries = er.async_entries_for_config_entry(
+            er.async_get(self.hass), self.config_entry.entry_id
+        )
+        by_uid = {ent.unique_id: ent for ent in entries}
+        enabled: set[str] = set()
+        for section, keys in SECTION_ENTITY_KEYS.items():
+            for key in keys:
+                uid = f"{self.address}_{key}"
+                reg_entry = by_uid.get(uid)
+                if reg_entry is None:
+                    if key not in DISABLED_BY_DEFAULT_ENTITY_KEYS:
+                        enabled.add(section)
+                        break
+                elif reg_entry.disabled_by is None:
+                    enabled.add(section)
+                    break
+        return frozenset(enabled)
+
     def _mark_sections_read(self, data: PowerNIMeterData, now: datetime) -> None:
         """Record which slow groups this read actually returned values for."""
         if data.total_import_kwh is not None:
             self._section_last_read[SECTION_UNITS] = now
+        if data.total_export_kwh is not None:
+            self._section_last_read[SECTION_EXPORT] = now
         if data.unit_rate is not None:
             self._section_last_read[SECTION_RATE] = now
         if any(
@@ -650,11 +676,19 @@ class PowerNIDataUpdateCoordinator(DataUpdateCoordinator[PowerNIMeterData]):
             )
 
         self._poll_deferred = False
+        enabled = self._enabled_sections()
         sections = sections_due(
             now,
             self._section_last_read,
             force_full=self._force_full_read or self.data is None,
+            enabled=enabled,
         )
+        if not sections:
+            _LOGGER.debug("No enabled sections due for %s; skipping BLE poll", self.address)
+            self._force_full_read = False
+            self._check_and_notify_stale(now)
+            self._set_poll_status(POLL_STATUS_IDLE)
+            return self.data if self.data is not None else PowerNIMeterData()
         _LOGGER.debug(
             "Polling %s for sections: %s", self.address, ", ".join(sorted(sections))
         )

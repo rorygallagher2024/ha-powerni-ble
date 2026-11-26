@@ -31,6 +31,8 @@ from .const import (
     RSP_SURVEY_BLOCK_HEADER,
     RSP_SURVEY_END,
     RSP_TRANSPARENT_ACK,
+    SECTION_BALANCE,
+    SECTION_EXPORT,
     SECTION_LIVE,
     SECTION_RATE,
     SECTION_SPEND,
@@ -63,6 +65,11 @@ RE_BALANCE_OR_DAYS_LEFT = re.compile(
 RE_LOAD_KW = re.compile(r"KW\s*(-?\d+\.\d+)")
 RE_LOAD_COST = re.compile(r"\s*#?(\d+\.\d+)/HR")
 RE_IMP_UNITS = re.compile(r"(\d+)\s*IMP UNITS")
+RE_EXP_UNITS = re.compile(r"(\d+)\s*EXP UNITS")
+RE_TEST_IMP = re.compile(r"(?:TEST IMP\s+\d+(?:\.\d+)?|\d+(?:\.\d+)?\s+TEST IMP)")
+RE_EXPORT_OR_STEP = re.compile(
+    f"(?:{RE_EXP_UNITS.pattern})|(?:{RE_TEST_IMP.pattern})|(?:{RE_IMP_UNITS.pattern})"
+)
 RE_UNIT_RATE_PENCE = re.compile(r"(?:^|\s)(\d+(?:\.\d+)?)\s*P(?:\s|$)")
 RE_PREV_LABEL = re.compile(r"PREV ([A-Z]+)")
 RE_MONTH_USAGE = re.compile(
@@ -106,6 +113,7 @@ class PowerNIMeterData:
     current_load_kw: float | None = None
     current_cost_per_hour: float | None = None
     total_import_kwh: int | None = None
+    total_export_kwh: int | None = None
     unit_rate: float | None = None
     yesterday_cost: float | None = None
     last_7_days_cost: float | None = None
@@ -122,6 +130,7 @@ class PowerNIMeterData:
                 self.current_load_kw,
                 self.current_cost_per_hour,
                 self.total_import_kwh,
+                self.total_export_kwh,
                 self.unit_rate,
                 self.yesterday_cost,
                 self.last_7_days_cost,
@@ -560,8 +569,9 @@ async def async_read_meter(
 ) -> PowerNIMeterData:
     """Run one transparent-mode telemetry poll against a connected Freedom Unit.
 
-    `sections` selects which groups of readings to fetch (balance is always
-    read). Fields for skipped sections are left as None. When `on_progress` is
+    `sections` selects which groups of readings to fetch (for example
+    balance/days left, live load, import/export units, rate, and spend).
+    Fields for skipped sections are left as None. When `on_progress` is
     provided, intermediate section deltas are emitted as each section finishes.
     """
     _log_gatt_services(client, logger)
@@ -622,41 +632,42 @@ async def async_read_meter(
         )
 
         # 1. Balance and days remaining (meter may alternate in either order)
-        await _display_reset()
-        for _ in range(3):
-            if data.balance is not None and data.days_left_status is not None:
-                break
-            await _send(CMD_GET_BALANCE)
-            try:
-                matched_line, _ = await _wait_matching_line(
-                    line_queue,
-                    RE_BALANCE_OR_DAYS_LEFT,
-                    LINE_TIMEOUT,
-                    disconnected=disconnected,
-                )
-            except TimeoutError as err:
-                logger.warning(
-                    "Timed out reading balance/days remaining (seen_lines=%r)",
-                    getattr(err, "seen_lines", []),
-                )
-                continue
+        if SECTION_BALANCE in sections:
+            await _display_reset()
+            for _ in range(3):
+                if data.balance is not None and data.days_left_status is not None:
+                    break
+                await _send(CMD_GET_BALANCE)
+                try:
+                    matched_line, _ = await _wait_matching_line(
+                        line_queue,
+                        RE_BALANCE_OR_DAYS_LEFT,
+                        LINE_TIMEOUT,
+                        disconnected=disconnected,
+                    )
+                except TimeoutError as err:
+                    logger.warning(
+                        "Timed out reading balance/days remaining (seen_lines=%r)",
+                        getattr(err, "seen_lines", []),
+                    )
+                    continue
 
-            bal_match = RE_BALANCE.search(matched_line)
-            if bal_match is not None and data.balance is None:
-                data.balance = float(bal_match.group(2).replace("#", ""))
-            dl_match = RE_DAYS_LEFT.search(matched_line)
-            if dl_match is not None and data.days_left_status is None:
-                data.days_left_status = " ".join(dl_match.group(0).split())
-                data.days_left = (
-                    int(dl_match.group(2)) if dl_match.group(2) is not None else None
+                bal_match = RE_BALANCE.search(matched_line)
+                if bal_match is not None and data.balance is None:
+                    data.balance = float(bal_match.group(2).replace("#", ""))
+                dl_match = RE_DAYS_LEFT.search(matched_line)
+                if dl_match is not None and data.days_left_status is None:
+                    data.days_left_status = " ".join(dl_match.group(0).split())
+                    data.days_left = (
+                        int(dl_match.group(2)) if dl_match.group(2) is not None else None
+                    )
+            _emit_progress(
+                PowerNIMeterData(
+                    balance=data.balance,
+                    days_left=data.days_left,
+                    days_left_status=data.days_left_status,
                 )
-        _emit_progress(
-            PowerNIMeterData(
-                balance=data.balance,
-                days_left=data.days_left,
-                days_left_status=data.days_left_status,
             )
-        )
 
         # 2. Live kW load and current £/hr rate
         if SECTION_LIVE in sections:
@@ -693,9 +704,10 @@ async def async_read_meter(
                 )
             )
 
-        # 3. Keepalive, then cumulative import units (kWh)
+        # 3. Keepalive, then cumulative import/export units (kWh) via key 9 cycling
         if (
             SECTION_UNITS in sections
+            or SECTION_EXPORT in sections
             or SECTION_RATE in sections
             or SECTION_SPEND in sections
         ):
@@ -704,22 +716,54 @@ async def async_read_meter(
                 ctrl_queue, RSP_KEEPALIVE_ACK, KEEPALIVE_ACK_TIMEOUT, disconnected
             ):
                 logger.debug("Keepalive ACK timed out; continuing")
-        if SECTION_UNITS in sections:
-
+        if SECTION_UNITS in sections or SECTION_EXPORT in sections:
             await _display_reset()
-            try:
-                await _send(CMD_TOTAL_UNITS)
-                _, match = await _wait_matching_line(
-                    line_queue, RE_IMP_UNITS, LINE_TIMEOUT, disconnected=disconnected
-                )
-                assert match is not None
-                data.total_import_kwh = int(match.group(1))
-            except TimeoutError as err:
-                logger.warning(
-                    "Timed out reading total import kWh units (seen_lines=%r)",
-                    getattr(err, "seen_lines", []),
-                )
-            _emit_progress(PowerNIMeterData(total_import_kwh=data.total_import_kwh))
+            seen_import = False
+            if SECTION_UNITS in sections:
+                try:
+                    await _send(CMD_TOTAL_UNITS)
+                    _, match = await _wait_matching_line(
+                        line_queue, RE_IMP_UNITS, LINE_TIMEOUT, disconnected=disconnected
+                    )
+                    assert match is not None
+                    data.total_import_kwh = int(match.group(1))
+                    seen_import = True
+                except TimeoutError as err:
+                    logger.warning(
+                        "Timed out reading total import kWh units (seen_lines=%r)",
+                        getattr(err, "seen_lines", []),
+                    )
+                _emit_progress(PowerNIMeterData(total_import_kwh=data.total_import_kwh))
+
+            if SECTION_EXPORT in sections:
+                for _ in range(3 if seen_import else 4):
+                    try:
+                        await _send(CMD_TOTAL_UNITS)
+                        matched_line, _ = await _wait_matching_line(
+                            line_queue,
+                            RE_EXPORT_OR_STEP,
+                            LINE_TIMEOUT,
+                            disconnected=disconnected,
+                        )
+                    except TimeoutError as err:
+                        logger.warning(
+                            "Timed out reading total export kWh units (seen_lines=%r)",
+                            getattr(err, "seen_lines", []),
+                        )
+                        break
+
+                    exp_match = RE_EXP_UNITS.search(matched_line)
+                    if exp_match is not None:
+                        data.total_export_kwh = int(exp_match.group(1))
+                        break
+                    if RE_IMP_UNITS.search(matched_line) is not None:
+                        if seen_import:
+                            logger.debug(
+                                "Key 9 wrapped back to IMP UNITS without EXP UNITS"
+                            )
+                            break
+                        seen_import = True
+                _emit_progress(PowerNIMeterData(total_export_kwh=data.total_export_kwh))
 
         # 4. Active unit rate (R1 PRICE in pence -> GBP/kWh)
         if SECTION_RATE in sections:
@@ -789,13 +833,14 @@ async def async_read_meter(
 
         logger.info(
             "Power NI meter read complete: balance=%s days_left=%s (%s) "
-            "load_kw=%s cost_per_hr=%s imp_kwh=%s unit_rate=%s yesterday=%s last_7d=%s last_month=%s",
+            "load_kw=%s cost_per_hr=%s imp_kwh=%s exp_kwh=%s unit_rate=%s yesterday=%s last_7d=%s last_month=%s",
             data.balance,
             data.days_left,
             data.days_left_status,
             data.current_load_kw,
             data.current_cost_per_hour,
             data.total_import_kwh,
+            data.total_export_kwh,
             data.unit_rate,
             data.yesterday_cost,
             data.last_7_days_cost,

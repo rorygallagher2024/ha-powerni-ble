@@ -38,6 +38,7 @@ EXPECTED_ENTITIES: dict[str, tuple[str, EntityCategory | None]] = {
     f"{TEST_ADDRESS}_current_load_kw": ("B1234567 Current load", None),
     f"{TEST_ADDRESS}_current_cost_per_hour": ("B1234567 Current cost rate", None),
     f"{TEST_ADDRESS}_total_import_kwh": ("B1234567 Total import energy", None),
+    f"{TEST_ADDRESS}_total_export_kwh": ("B1234567 Total export energy", None),
     f"{TEST_ADDRESS}_unit_rate": ("B1234567 Unit rate", None),
     f"{TEST_ADDRESS}_yesterday_cost": ("B1234567 Yesterday's spend", None),
     f"{TEST_ADDRESS}_last_7_days_cost": ("B1234567 Last 7 days spend", None),
@@ -66,7 +67,7 @@ EXPECTED_ENTITIES: dict[str, tuple[str, EntityCategory | None]] = {
 async def test_setup_entities_actions_and_unload(
     hass: HomeAssistant, enable_bluetooth: None
 ) -> None:
-    """Full entry setup registers 18 translated entities and supports controls + unload."""
+    """Full entry setup registers 19 translated entities (export disabled by default) and supports controls + unload."""
     sample = make_sample_meter_data()
     fake_client = MagicMock(is_connected=True, disconnect=AsyncMock())
     scanner = make_scanner_device(rssi=-73)
@@ -91,16 +92,21 @@ async def test_setup_entities_actions_and_unload(
 
     entity_reg = er.async_get(hass)
     entries = er.async_entries_for_config_entry(entity_reg, entry.entry_id)
-    assert len(entries) == 18
+    assert len(entries) == 19
 
     by_unique_id = {ent.unique_id: ent for ent in entries}
     assert set(by_unique_id) == set(EXPECTED_ENTITIES)
+    export_uid = f"{TEST_ADDRESS}_total_export_kwh"
     for uid, (expected_name, expected_cat) in EXPECTED_ENTITIES.items():
         reg_entry = by_unique_id[uid]
         assert reg_entry.entity_category is expected_cat
         state = hass.states.get(reg_entry.entity_id)
-        assert state is not None
-        assert state.attributes["friendly_name"] == expected_name
+        if uid == export_uid:
+            assert reg_entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+            assert state is None
+        else:
+            assert state is not None
+            assert state.attributes["friendly_name"] == expected_name
 
     # Check sensor states and attributes
     balance_state = hass.states.get(by_unique_id[f"{TEST_ADDRESS}_balance"].entity_id)
@@ -166,6 +172,31 @@ async def test_setup_entities_actions_and_unload(
     )
     assert coord.scan_interval_minutes == 5
     assert entry.options[CONF_SCAN_INTERVAL] == 5
+
+    # Enabling Total export energy exposes its kWh state after reload.
+    entity_reg.async_update_entity(
+        by_unique_id[export_uid].entity_id,
+        disabled_by=None,
+    )
+    with (
+        patch.object(
+            coord_mod.bluetooth,
+            "async_scanner_devices_by_address",
+            return_value=[scanner],
+        ),
+        patch.object(
+            coord_mod, "establish_connection", AsyncMock(return_value=fake_client)
+        ),
+        patch.object(coord_mod, "async_read_meter", AsyncMock(return_value=sample)),
+    ):
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    export_state = hass.states.get(by_unique_id[export_uid].entity_id)
+    assert export_state is not None
+    assert export_state.state == "6168"
+    assert export_state.attributes["unit_of_measurement"] == "kWh"
+    assert export_state.attributes["friendly_name"] == "B1234567 Total export energy"
 
     # Clean unload and removal
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -237,6 +268,7 @@ async def test_diagnostics_redacts_sensitive_fields(
         "**REDACTED** (**REDACTED**)"
     )
     assert diag["coordinator"]["rssi"] == -68
+    assert "export" not in diag["coordinator"]["enabled_sections"]
     assert diag["coordinator"]["data"]["balance"] == 24.5
     assert diag["coordinator"]["last_top_up"]["amount"] == 25.0
 

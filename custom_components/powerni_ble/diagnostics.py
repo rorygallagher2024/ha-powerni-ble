@@ -121,6 +121,7 @@ async def async_get_config_entry_diagnostics(
                 key: value.isoformat()
                 for key, value in coordinator._section_last_read.items()
             },
+            "enabled_sections": sorted(coordinator._enabled_sections()),
             "field_read_at": {
                 key: value.isoformat()
                 for key, value in coordinator.field_read_at.items()

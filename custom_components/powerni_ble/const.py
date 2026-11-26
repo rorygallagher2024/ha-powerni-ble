@@ -105,15 +105,36 @@ POLL_STATUS_OPTIONS: tuple[str, ...] = (
 SECTION_BALANCE = "balance"
 SECTION_LIVE = "live"  # current kW load and £/hr
 SECTION_UNITS = "units"  # cumulative import kWh
+SECTION_EXPORT = "export"  # cumulative export kWh (solar / microgeneration)
 SECTION_RATE = "rate"  # active unit rate (GBP/kWh)
 SECTION_SPEND = "spend"  # yesterday / last 7 days / last month
 ALL_SECTIONS = frozenset(
-    {SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS, SECTION_RATE, SECTION_SPEND}
+    {
+        SECTION_BALANCE,
+        SECTION_LIVE,
+        SECTION_UNITS,
+        SECTION_EXPORT,
+        SECTION_RATE,
+        SECTION_SPEND,
+    }
 )
+
+# Entity keys belonging to each polling section. When every entity in a section
+# is disabled in Home Assistant's entity registry, that section is skipped.
+SECTION_ENTITY_KEYS: dict[str, tuple[str, ...]] = {
+    SECTION_BALANCE: ("balance", "days_left", "last_top_up", "last_top_up_time"),
+    SECTION_LIVE: ("current_load_kw", "current_cost_per_hour"),
+    SECTION_UNITS: ("total_import_kwh",),
+    SECTION_EXPORT: ("total_export_kwh",),
+    SECTION_RATE: ("unit_rate",),
+    SECTION_SPEND: ("yesterday_cost", "last_7_days_cost", "last_month_cost"),
+}
+DISABLED_BY_DEFAULT_ENTITY_KEYS: frozenset[str] = frozenset({"total_export_kwh"})
 
 # Maximum age before a slow section is read again.
 SECTION_REFRESH_INTERVALS = {
     SECTION_UNITS: timedelta(hours=1),
+    SECTION_EXPORT: timedelta(hours=1),
     SECTION_RATE: timedelta(hours=6),
     SECTION_SPEND: timedelta(hours=6),
 }
@@ -123,17 +144,22 @@ def sections_due(
     now: datetime,
     last_read: Mapping[str, datetime],
     force_full: bool = False,
+    enabled: frozenset[str] | None = None,
 ) -> frozenset[str]:
     """Return the reading groups to fetch on this poll.
 
     A slow section is due when it has never been read, its refresh interval
     has elapsed, or (for daily spend/tariff figures) the local date has
-    changed since it was last read.
+    changed since it was last read. When `enabled` is provided, sections
+    outside it are omitted even on forced refreshes.
     """
+    allowed = ALL_SECTIONS if enabled is None else (enabled & ALL_SECTIONS)
     if force_full:
-        return ALL_SECTIONS
-    due = {SECTION_BALANCE, SECTION_LIVE}
+        return allowed
+    due = {SECTION_BALANCE, SECTION_LIVE} & allowed
     for section, max_age in SECTION_REFRESH_INTERVALS.items():
+        if section not in allowed:
+            continue
         last = last_read.get(section)
         if (
             last is None

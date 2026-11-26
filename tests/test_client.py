@@ -61,6 +61,7 @@ from custom_components.powerni_ble.const import (  # noqa: E402
     RSP_SURVEY_END,
     RSP_TRANSPARENT_ACK,
     SECTION_BALANCE,
+    SECTION_EXPORT,
     SECTION_LIVE,
     SECTION_RATE,
     SECTION_SPEND,
@@ -209,7 +210,11 @@ def full_script() -> dict[bytes, list[list[bytes]]]:
             [encode_lcd("LOAD COST"), encode_lcd(" #0.14/HR")],
         ],
         CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
-        CMD_TOTAL_UNITS: [[encode_lcd("12345 IMP UNITS")]],
+        CMD_TOTAL_UNITS: [
+            [encode_lcd("12345 IMP UNITS")],
+            [encode_lcd_pair("TEST IMP ", "2345.6789")],
+            [encode_lcd("543 EXP UNITS")],
+        ],
         CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
         CMD_PREV_USAGE: [
             [encode_lcd("PREV DAY")],
@@ -286,7 +291,11 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd("LOAD COST"), encode_lcd(" #0.14/HR")],
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
-            CMD_TOTAL_UNITS: [[encode_lcd("12345 IMP UNITS")]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd("12345 IMP UNITS")],
+                [encode_lcd_pair("TEST IMP ", "2345.6789")],
+                [encode_lcd("543 EXP UNITS")],
+            ],
             CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd("PREV DAY")],
@@ -311,6 +320,7 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.current_load_kw, 0.452)
         self.assertEqual(data.current_cost_per_hour, 0.14)
         self.assertEqual(data.total_import_kwh, 12345)
+        self.assertEqual(data.total_export_kwh, 543)
         self.assertEqual(data.unit_rate, 0.33285)
         self.assertEqual(data.yesterday_cost, 3.20)
         self.assertEqual(data.last_7_days_cost, 21.45)
@@ -338,7 +348,11 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd("0.00/HR")],
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
-            CMD_TOTAL_UNITS: [[encode_lcd("987 IMP UNITS")]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd("987 IMP UNITS")],
+                [encode_lcd_pair("TEST IMP ", "987.1234")],
+                [encode_lcd("0 EXP UNITS")],
+            ],
             CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  30P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd("PREV DAY")],
@@ -384,7 +398,11 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd_pair("LOAD COST", " #0.16/HR")],
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
-            CMD_TOTAL_UNITS: [[encode_lcd("IMP UNITS"), encode_lcd("12345")]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd("IMP UNITS"), encode_lcd("12345")],
+                [encode_lcd("TEST IMP "), encode_lcd("2345.6789")],
+                [encode_lcd("EXP UNITS"), encode_lcd("6168")],
+            ],
             CMD_UNIT_RATE: [[encode_lcd_pair("R1 PRICE ", "  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd_pair("PREV DAY", "  #2.77")],
@@ -432,7 +450,11 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd(" #0.16/HR")],
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
-            CMD_TOTAL_UNITS: [[encode_lcd_pair("12345", "IMP UNITS")]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd_pair("12345", "IMP UNITS")],
+                [encode_lcd_pair("TEST IMP ", "2345.6789")],
+                [encode_lcd_pair("6168", "EXP UNITS")],
+            ],
             CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd_pair("PREV DAY", "  #2.77")],
@@ -476,7 +498,11 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd(" #0.13/HR")],
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
-            CMD_TOTAL_UNITS: [[encode_lcd_pair("11407", "IMP UNITS")]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd_pair("11407", "IMP UNITS")],
+                [encode_lcd_pair("TEST IMP ", "1407.2564")],
+                [encode_lcd_pair("6168", "EXP UNITS")],
+            ],
             CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd("PREV DAY"), encode_lcd("   #2.77")],
@@ -509,6 +535,95 @@ class TestAsyncReadMeter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.notify_started)
         self.assertTrue(client.notify_stopped)
         self.assertEqual(client.writes[-1][1], CMD_LEAVE_TRANSPARENT)
+
+    async def test_key9_cycles_imp_test_imp_to_exp_units(self) -> None:
+        """Key 9 cycles IMP UNITS -> TEST IMP -> EXP UNITS on a solar meter."""
+        script = {
+            CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+            CMD_DISPLAY_RESET: [[encode_lcd("%%%%%%%%%")]],
+            CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd("IMP UNITS"), encode_lcd("    11441")],
+                [encode_lcd("TEST IMP "), encode_lcd("1441.2564")],
+                [encode_lcd("EXP UNITS"), encode_lcd("     6168")],
+            ],
+            CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+        }
+        client = FakeBleakClient(script)
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            data = await async_read_meter(
+                client,  # type: ignore[arg-type]
+                sections=frozenset({SECTION_UNITS, SECTION_EXPORT}),
+            )
+        self.assertEqual(data.total_import_kwh, 11441)
+        self.assertEqual(data.total_export_kwh, 6168)
+        unit_writes = [w[1] for w in client.writes if w[1] == CMD_TOTAL_UNITS]
+        self.assertEqual(len(unit_writes), 3)
+
+    async def test_export_only_poll_skips_balance_and_live_sections(self) -> None:
+        """Polling only SECTION_EXPORT skips balance/live and steps to EXP UNITS."""
+        script = {
+            CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+            CMD_DISPLAY_RESET: [[encode_lcd("%%%%%%%%%")]],
+            CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd("IMP UNITS"), encode_lcd("    11441")],
+                [encode_lcd("TEST IMP "), encode_lcd("1441.2564")],
+                [encode_lcd("EXP UNITS"), encode_lcd("     6168")],
+            ],
+            CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+        }
+        client = FakeBleakClient(script)
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            data = await async_read_meter(
+                client,  # type: ignore[arg-type]
+                sections=frozenset({SECTION_EXPORT}),
+            )
+        sent = {w[1] for w in client.writes}
+        self.assertNotIn(CMD_GET_BALANCE, sent)
+        self.assertNotIn(CMD_TOTAL_CONSUMPTION, sent)
+        self.assertIsNone(data.balance)
+        self.assertIsNone(data.total_import_kwh)
+        self.assertEqual(data.total_export_kwh, 6168)
+
+    async def test_export_wrap_around_on_non_solar_meter_breaks_cleanly(self) -> None:
+        """A meter whose key 9 wraps straight back to IMP UNITS exits without timing out."""
+        script = {
+            CMD_ENTER_TRANSPARENT: [[RSP_TRANSPARENT_ACK]],
+            CMD_DISPLAY_RESET: [[encode_lcd("%%%%%%%%%")]],
+            CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd("IMP UNITS"), encode_lcd("    11441")],
+                [encode_lcd("TEST IMP "), encode_lcd("1441.2564")],
+                [encode_lcd("IMP UNITS"), encode_lcd("    11441")],
+            ],
+            CMD_LEAVE_TRANSPARENT: [[RSP_DISCONNECT_ACK]],
+        }
+        client = FakeBleakClient(script)
+        with (
+            patch.object(client_mod, "COMMAND_PACING_DELAY", 0.0),
+            patch.object(client_mod, "DISCONNECT_ACK_TIMEOUT", 0.05),
+        ):
+            data = await async_read_meter(
+                client,  # type: ignore[arg-type]
+                sections=frozenset({SECTION_UNITS, SECTION_EXPORT}),
+            )
+        self.assertEqual(data.total_import_kwh, 11441)
+        self.assertIsNone(data.total_export_kwh)
+
+    async def test_units_without_export_sends_key9_once(self) -> None:
+        """Polling SECTION_UNITS without SECTION_EXPORT stops after IMP UNITS."""
+        client, data = await self._read(frozenset({SECTION_UNITS}))
+        unit_writes = [w[1] for w in client.writes if w[1] == CMD_TOTAL_UNITS]
+        self.assertEqual(len(unit_writes), 1)
+        self.assertEqual(data.total_import_kwh, 12345)
+        self.assertIsNone(data.total_export_kwh)
 
 
 class TestClampScanInterval(unittest.TestCase):
@@ -645,14 +760,21 @@ class TestSectionsDue(unittest.TestCase):
     def test_force_full(self) -> None:
         last = {
             SECTION_UNITS: self.NOW,
+            SECTION_EXPORT: self.NOW,
             SECTION_RATE: self.NOW,
             SECTION_SPEND: self.NOW,
         }
         self.assertEqual(sections_due(self.NOW, last, force_full=True), ALL_SECTIONS)
+        subset = frozenset({SECTION_BALANCE, SECTION_UNITS})
+        self.assertEqual(
+            sections_due(self.NOW, last, force_full=True, enabled=subset),
+            subset,
+        )
 
     def test_recent_reads_skip_slow_sections(self) -> None:
         last = {
             SECTION_UNITS: self.NOW - timedelta(minutes=30),
+            SECTION_EXPORT: self.NOW - timedelta(minutes=30),
             SECTION_RATE: self.NOW - timedelta(hours=2),
             SECTION_SPEND: self.NOW - timedelta(hours=2),
         }
@@ -663,11 +785,17 @@ class TestSectionsDue(unittest.TestCase):
     def test_units_hourly_spend_six_hourly(self) -> None:
         last = {
             SECTION_UNITS: self.NOW - timedelta(minutes=61),
+            SECTION_EXPORT: self.NOW - timedelta(minutes=61),
             SECTION_RATE: self.NOW - timedelta(hours=5),
             SECTION_SPEND: self.NOW - timedelta(hours=5),
         }
         self.assertEqual(
             sections_due(self.NOW, last),
+            frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS, SECTION_EXPORT}),
+        )
+        enabled_no_export = ALL_SECTIONS - {SECTION_EXPORT}
+        self.assertEqual(
+            sections_due(self.NOW, last, enabled=enabled_no_export),
             frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_UNITS}),
         )
         last[SECTION_RATE] = self.NOW - timedelta(hours=6)
@@ -680,6 +808,7 @@ class TestSectionsDue(unittest.TestCase):
         now = datetime(2026, 11, 23, 0, 5, tzinfo=UTC)
         last = {
             SECTION_UNITS: now - timedelta(minutes=5),
+            SECTION_EXPORT: now - timedelta(minutes=5),
             SECTION_RATE: now - timedelta(minutes=20),
             SECTION_SPEND: now - timedelta(minutes=20),
         }
@@ -687,6 +816,11 @@ class TestSectionsDue(unittest.TestCase):
             sections_due(now, last),
             frozenset({SECTION_BALANCE, SECTION_LIVE, SECTION_RATE, SECTION_SPEND}),
         )
+
+    def test_disabled_sections_filter_out_balance_and_live(self) -> None:
+        enabled = frozenset({SECTION_UNITS})
+        self.assertEqual(sections_due(self.NOW, {}, enabled=enabled), enabled)
+        self.assertEqual(sections_due(self.NOW, {}, enabled=frozenset()), frozenset())
 
 
 class TestDisconnectDetection(unittest.IsolatedAsyncioTestCase):
@@ -788,7 +922,11 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
                 [encode_lcd(" #0.14/HR")],
             ],
             CMD_KEEPALIVE: [[RSP_KEEPALIVE_ACK]],
-            CMD_TOTAL_UNITS: [[encode_lcd("12345 IMP UNITS")]],
+            CMD_TOTAL_UNITS: [
+                [encode_lcd("12345 IMP UNITS")],
+                [encode_lcd_pair("TEST IMP ", "2345.6789")],
+                [encode_lcd("543 EXP UNITS")],
+            ],
             CMD_UNIT_RATE: [[encode_lcd("R1 PRICE "), encode_lcd("  33.285P")]],
             CMD_PREV_USAGE: [
                 [encode_lcd("PREV DAY")],
@@ -811,7 +949,7 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
                 on_progress=snapshots.append,
             )
 
-        self.assertEqual(len(snapshots), 4)
+        self.assertEqual(len(snapshots), 5)
         # Snapshot 1: only balance/days left delta
         self.assertEqual(snapshots[0].balance, 14.25)
         self.assertEqual(snapshots[0].days_left, 12)
@@ -826,11 +964,16 @@ class TestProgressCallbacks(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(snapshots[2].balance)
         self.assertIsNone(snapshots[2].current_load_kw)
         self.assertEqual(snapshots[2].total_import_kwh, 12345)
-        self.assertIsNone(snapshots[2].unit_rate)
-        # Snapshot 4: only unit rate delta
-        self.assertIsNone(snapshots[3].balance)
-        self.assertEqual(snapshots[3].unit_rate, 0.33285)
-        self.assertIsNone(snapshots[3].yesterday_cost)
+        self.assertIsNone(snapshots[2].total_export_kwh)
+        # Snapshot 4: only cumulative export kWh delta
+        self.assertIsNone(snapshots[3].total_import_kwh)
+        self.assertEqual(snapshots[3].total_export_kwh, 543)
+        self.assertIsNone(snapshots[3].unit_rate)
+        # Snapshot 5: only unit rate delta
+        self.assertIsNone(snapshots[4].balance)
+        self.assertEqual(snapshots[4].unit_rate, 0.33285)
+        self.assertIsNone(snapshots[4].yesterday_cost)
+        self.assertEqual(final.total_export_kwh, 543)
         self.assertEqual(final.unit_rate, 0.33285)
         self.assertEqual(final.yesterday_cost, 3.20)
         self.assertEqual(final.last_month_cost, 89.10)
