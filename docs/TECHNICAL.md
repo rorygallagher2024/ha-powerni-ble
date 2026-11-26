@@ -34,6 +34,7 @@ Stock ESPHome `bluetooth_proxy` compiles with `io_capability: none`, so it canno
 - **Per-field staleness:** Each reading sensor carries a `last_read` ISO timestamp attribute and stays available until older than `max(24 hours, 3 × poll_interval)`.
 - **Auto-sticky proxy selection:** When `proxy_source` is empty (`Automatic`), the last working proxy source is persisted in HA storage (`powerni_ble.<entry_id>`) and preferred on future polls, falling back if offline or clearing on auth errors.
 - **Entity-driven section skipping:** Before polling, the coordinator checks `entity_registry` via `SECTION_ENTITY_KEYS` and `DISABLED_BY_DEFAULT_ENTITY_KEYS`; if every entity in a section is disabled (including disabled-by-default sensors before registration), `sections_due()` omits that section even on `Refresh`.
+- **Reload isolation & GATT write mode:** Active BLE sessions share a per-address `asyncio.Lock` stored in `hass.data`, `async_unload_entry` cancels and awaits any in-flight poll or survey task before reload proceeds, and whichever GATT write mode (`write-with-response` vs `write-without-response`) succeeds for `CMD_ENTER_TRANSPARENT` is persisted per entry and reused on future polls and `CMD_LEAVE_TRANSPARENT`.
 
 ## Entity Metadata
 

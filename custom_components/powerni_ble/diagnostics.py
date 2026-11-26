@@ -82,6 +82,7 @@ async def async_get_config_entry_diagnostics(
         "coordinator": {
             "scan_interval_minutes": coordinator.scan_interval_minutes,
             "auto_sync_history": coordinator.auto_sync_history,
+            "write_with_response": coordinator._write_with_response,
             "preferred_proxy_source": coordinator._preferred_proxy_source,
             "poll_status": coordinator.poll_status,
             "last_error": _redact_error(

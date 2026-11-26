@@ -49,9 +49,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: PowerNIConfigEntry)
 
 async def async_unload_entry(hass: HomeAssistant, entry: PowerNIConfigEntry) -> bool:
     """Unload a config entry."""
-    coordinator = entry.runtime_data
-    if coordinator._survey_task is not None and not coordinator._survey_task.done():
-        coordinator._survey_task.cancel()
+    await entry.runtime_data.async_shutdown_ble()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
@@ -60,4 +58,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     address = (entry.data.get(CONF_ADDRESS) or entry.unique_id or "").upper()
     if address:
         ir.async_delete_issue(hass, DOMAIN, pairing_issue_id_for_address(address))
+        locks: dict[str, object] | None = hass.data.get(f"{DOMAIN}_locks")
+        if locks is not None:
+            locks.pop(address, None)
     await Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()

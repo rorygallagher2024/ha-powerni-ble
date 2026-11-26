@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -46,6 +47,7 @@ from custom_components.powerni_ble.coordinator import (
 )
 from tests.helpers import (
     TEST_ADDRESS,
+    TEST_ALT_ADDRESS,
     TEST_NAME,
     TEST_PROXY_SOURCE,
     TEST_PROXY_SOURCE_2,
@@ -765,3 +767,74 @@ async def test_auto_sync_history_option_controls_background_task(
         fake_task.cancel.assert_called_once()
     finally:
         hass.config.components.remove("recorder")
+
+
+async def test_shared_address_lock_and_unload_cancels_inflight_poll(
+    hass: HomeAssistant,
+) -> None:
+    """Reloaded coordinators share a per-address lock and unload cancels active polls."""
+    coord1 = _make_coordinator(hass)
+    entry2 = make_config_entry()
+    entry2.add_to_hass(hass)
+    coord2 = PowerNIDataUpdateCoordinator(hass, entry2, TEST_ADDRESS, TEST_NAME)
+    other = PowerNIDataUpdateCoordinator(hass, entry2, TEST_ALT_ADDRESS, "B9999999")
+
+    assert coord1._connect_lock is coord2._connect_lock
+    assert coord1._connect_lock is not other._connect_lock
+
+    started = asyncio.Event()
+    blocker = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    async def slow_poll(_sections: frozenset[str]) -> PowerNIMeterData:
+        started.set()
+        try:
+            await blocker.wait()
+        finally:
+            cleaned_up.set()
+        return make_sample_meter_data()
+
+    with patch.object(coord1, "_async_poll", side_effect=slow_poll):
+        poll_task = asyncio.create_task(coord1._async_update_data())
+        await started.wait()
+
+        # Simulate HA reload calling async_shutdown_ble() mid-poll.
+        await coord1.async_shutdown_ble()
+
+    assert poll_task.cancelled()
+    assert cleaned_up.is_set()
+    assert not coord2._connect_lock.locked()
+
+
+async def test_write_with_response_persists_in_store(
+    hass: HomeAssistant,
+) -> None:
+    """Remembered write_with_response persists across reloads and is passed to client."""
+    coord = _make_coordinator(hass)
+    assert coord._write_with_response is False
+
+    with patch.object(coord_mod, "STORE_SAVE_DELAY_SECONDS", 0):
+        coord._handle_write_mode(True)
+        await coord._store.async_save(coord._stored_state())
+
+    reloaded = PowerNIDataUpdateCoordinator(
+        hass, coord.config_entry, TEST_ADDRESS, TEST_NAME
+    )
+    await reloaded.async_load_stored_state()
+    assert reloaded._write_with_response is True
+
+    client = _mock_client()
+    mock_read = AsyncMock(return_value=make_sample_meter_data())
+    with (
+        patch.object(reloaded, "_get_ble_device", return_value=make_ble_device()),
+        patch.object(
+            coord_mod, "establish_connection", AsyncMock(return_value=client)
+        ),
+        patch.object(coord_mod, "async_read_meter", mock_read),
+        patch.object(coord_mod, "STORE_SAVE_DELAY_SECONDS", 0),
+    ):
+        await reloaded._async_poll(frozenset())
+
+    assert mock_read.await_args is not None
+    assert mock_read.await_args.kwargs["prefer_write_with_response"] is True
+    assert mock_read.await_args.kwargs["on_write_mode"] == reloaded._handle_write_mode
